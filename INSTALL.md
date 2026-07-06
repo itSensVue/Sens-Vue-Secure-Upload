@@ -41,7 +41,7 @@ go run ./cmd/sprag hash-password
 With Docker only:
 
 ```bash
-docker compose run --build --rm sprag-app hash-password
+docker compose run --rm sprag-app hash-password
 ```
 
 Put the printed value in `ADMIN_PASSWORD_HASH`. Leave `ADMIN_PASSWORD` empty unless you intentionally want plaintext config.
@@ -80,13 +80,12 @@ E2E_INTAKE_ENABLED=false
 E2E_INTAKE_REQUIRED=false
 ```
 
-Start with the bundled Caddy reverse proxy. The container runs as the
-distroless nonroot user (UID 65532), so the bind-mounted data directory must be
-writable by that UID:
+Start with the bundled Caddy reverse proxy. The default Compose file pulls the
+released multi-arch image from GHCR and stores SQLite metadata in the named
+`sprag-data` volume:
 
 ```bash
-mkdir -p data && sudo chown 65532:65532 data
-SPRAG_DOMAIN=sprag.example.com docker compose up --build -d
+SPRAG_DOMAIN=sprag.example.com docker compose up -d
 ```
 
 For a local trial:
@@ -96,7 +95,7 @@ BASE_URL=https://localhost
 ```
 
 ```bash
-SPRAG_DOMAIN=localhost docker compose up --build
+SPRAG_DOMAIN=localhost docker compose up
 ```
 
 First-run smoke test:
@@ -134,7 +133,7 @@ openssl rand -base64 32
 Start:
 
 ```bash
-SPRAG_DOMAIN=sprag.example.com docker compose up --build -d
+SPRAG_DOMAIN=sprag.example.com docker compose up -d
 ```
 
 Admin workflow:
@@ -228,6 +227,14 @@ Important Tor notes:
 - Tor mode does not hide Sprag's outbound connection to a cloud S3 provider. Use local MinIO or private storage if storage-provider egress metadata matters.
 
 ## From Source
+
+The default Compose file is image-first. To test a local source build with the
+same Caddy, volume, and health-check topology:
+
+```bash
+docker build -t sprag:local .
+SPRAG_IMAGE=sprag:local SPRAG_PULL_POLICY=never docker compose up -d
+```
 
 Build the frontend once, then run the Go server:
 

@@ -17,6 +17,9 @@
 package main
 
 import (
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/elcamino/sprag/internal/config"
@@ -84,4 +87,49 @@ func TestNewHTTPConfigPreservesSecureCookieSetting(t *testing.T) {
 	if !httpCfg.E2EIntake.Enabled || !httpCfg.E2EIntake.Required {
 		t.Fatalf("E2EIntake = %#v, want enabled and required", httpCfg.E2EIntake)
 	}
+}
+
+func TestHealthCheckAcceptsNoContentResponse(t *testing.T) {
+	healthHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/healthz" {
+				t.Fatalf("path = %q, want /healthz", req.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusNoContent,
+				Status:     "204 No Content",
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	defer func() { healthHTTPClient = http.DefaultClient }()
+
+	if err := healthCheck("http://127.0.0.1:8080/healthz"); err != nil {
+		t.Fatalf("healthCheck returned error: %v", err)
+	}
+}
+
+func TestHealthCheckRejectsUnexpectedStatus(t *testing.T) {
+	healthHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Status:     "503 Service Unavailable",
+				Body:       io.NopCloser(strings.NewReader("not ready")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+	defer func() { healthHTTPClient = http.DefaultClient }()
+
+	if err := healthCheck("http://127.0.0.1:8080/healthz"); err == nil {
+		t.Fatal("expected healthCheck to reject non-2xx status")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }

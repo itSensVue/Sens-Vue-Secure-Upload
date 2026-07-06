@@ -160,28 +160,41 @@ The category itself is not empty — self-hosted "reverse share" tools exist, an
 ```bash
 cp .env.example .env
 openssl rand -base64 32   # put this in SESSION_SECRET
-docker compose run --build --rm sprag-app hash-password
+docker compose run --rm sprag-app hash-password
 # put the printed hash in ADMIN_PASSWORD_HASH, then fill BASE_URL and S3_*
-docker compose up --build -d
+docker compose up -d
 ```
 
 For production recipes, E2E-required mode, and onion-only Tor ingress, use [INSTALL.md](INSTALL.md).
 
 ## Run from the prebuilt image
 
-Prebuilt multi-arch images (amd64 + arm64) are published to the GitHub Container Registry on every release.
+Prebuilt multi-arch images (amd64 + arm64) are published to the GitHub Container Registry on every release. The bundled `docker-compose.yml` uses that image by default and runs Sprag behind Caddy with automatic HTTPS:
 
 ```bash
-# Print a bcrypt admin-password hash (needs no config):
-docker run --rm ghcr.io/elcamino/sprag:latest hash-password 'your-admin-password'
+cp .env.example .env
+openssl rand -base64 32   # put this in SESSION_SECRET
+docker compose run --rm sprag-app hash-password 'your-admin-password'
+# put the printed hash in ADMIN_PASSWORD_HASH, then fill BASE_URL and S3_*
+SPRAG_DOMAIN=sprag.example.com docker compose up -d
+```
 
-# Run the server (same config as the 60-second start; no reverse proxy):
+Pin `SPRAG_IMAGE` in `.env` for reproducible deploys, for example `ghcr.io/elcamino/sprag:1.6.1`. To test a local source build with the same Compose topology:
+
+```bash
+docker build -t sprag:local .
+SPRAG_IMAGE=sprag:local SPRAG_PULL_POLICY=never docker compose up -d
+```
+
+For a one-container trial without Caddy:
+
+```bash
 docker run -d --name sprag -p 8080:8080 \
   --env-file .env -v sprag-data:/data \
   ghcr.io/elcamino/sprag:latest
 ```
 
-Running the server needs `BASE_URL`, `SESSION_SECRET`, the `S3_*` values, and one of `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH` in your `.env` (see [Configuration](#configuration)). Pin a version like `ghcr.io/elcamino/sprag:1.6` for reproducible deploys. To use the image with Docker Compose, set `image: ghcr.io/elcamino/sprag:latest` on the `sprag-app` service and drop `build: .`.
+Running the server needs `BASE_URL`, `SESSION_SECRET`, the `S3_*` values, and one of `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH` in your `.env` (see [Configuration](#configuration)).
 
 ## Prebuilt binaries
 
@@ -216,6 +229,9 @@ Sprag loads `.env` if present and then reads environment variables. Startup fail
 | Variable | Required | Default | Notes |
 |---|:---:|---|---|
 | `PORT` | | `8080` | Listen port. |
+| `SPRAG_IMAGE` | | `ghcr.io/elcamino/sprag:latest` | Compose-only helper for the app image. Pin to a release tag for production. |
+| `SPRAG_PULL_POLICY` | | `missing` | Compose-only helper. Use `never` when testing a local image tag. |
+| `SPRAG_DOMAIN` | | `localhost` | Compose-only helper for the bundled Caddy reverse proxy. |
 | `BASE_URL` | Yes | | Used to build shareable `/u/<slug>` URLs. |
 | `ONION_BASE_URL` | | | Compose-only helper for `docker-compose.tor.yml`; set to `http://<hostname>.onion` after Tor generates the hostname. |
 | `COOKIE_SECURE` | | `auto` | Cookie `Secure` attribute policy: `auto`, `true`, or `false`. `auto` uses secure cookies for HTTPS and non-secure cookies only for localhost, loopback, and HTTP `.onion` origins. |

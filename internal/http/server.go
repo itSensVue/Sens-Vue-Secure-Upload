@@ -198,6 +198,10 @@ func (s *Server) routes(staticFS http.FileSystem) http.Handler {
 	r.Use(middleware.RequestID)
 	r.Use(s.securityHeaders)
 
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
 	r.Get("/api/u/{slug}", s.handlePublicPage)
 	r.Post("/api/u/{slug}/pin", s.handlePIN)
 	r.Post("/api/u/{slug}", s.handleUpload)

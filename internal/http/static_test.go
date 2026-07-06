@@ -43,6 +43,21 @@ func TestSPAFallbackServesIndexWithoutRedirect(t *testing.T) {
 	}
 }
 
+func TestHealthzReportsNoContent(t *testing.T) {
+	handler := (&Server{}).routes(nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rr.Code)
+	}
+	if rr.Body.Len() != 0 {
+		t.Fatalf("expected empty body, got %q", rr.Body.String())
+	}
+}
+
 func TestFrontendIndexDisallowsIndexing(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join("..", "..", "frontend", "index.html"))
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -36,6 +37,8 @@ import (
 	"github.com/elcamino/sprag/internal/store"
 )
 
+var healthHTTPClient = http.DefaultClient
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
@@ -46,11 +49,50 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		endpoint := defaultHealthEndpoint()
+		if len(os.Args) > 2 {
+			endpoint = os.Args[2]
+		}
+		if err := healthCheck(endpoint); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := run(logger); err != nil {
 		logger.Error("startup failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func defaultHealthEndpoint() string {
+	port := strings.TrimSpace(os.Getenv("PORT"))
+	if port == "" {
+		port = "8080"
+	}
+	return "http://127.0.0.1:" + port + "/healthz"
+}
+
+func healthCheck(endpoint string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := healthHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("health endpoint returned %s", resp.Status)
+	}
+	return nil
 }
 
 // hashPassword prints a bcrypt hash for an admin password, suitable for the
