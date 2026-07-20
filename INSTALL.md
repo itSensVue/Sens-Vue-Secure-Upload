@@ -9,14 +9,14 @@ This guide covers the common deployment modes:
 Sprag always needs three things:
 
 - a SQLite metadata directory
-- an S3-compatible bucket for file bodies
+- local filesystem space or an S3-compatible bucket for file bodies
 - a configured `.env`
 
 ## Prerequisites
 
 - Docker with the Compose plugin for the Docker paths.
 - Go 1.26+ and Node.js 22+ only if running from source.
-- An S3-compatible bucket and credentials. AWS S3, Wasabi, Backblaze B2, and MinIO-style services work. Sprag does not create the bucket.
+- For S3 storage only: a bucket and credentials. AWS S3, Wasabi, Backblaze B2, and MinIO-style services work. Sprag does not create the bucket.
 
 ## Common Configuration
 
@@ -46,9 +46,18 @@ docker compose run --rm sprag-app hash-password
 
 Put the printed value in `ADMIN_PASSWORD_HASH`. Leave `ADMIN_PASSWORD` empty unless you intentionally want plaintext config.
 
-Fill in S3:
+Choose one file-body backend. For local storage, the bundled Compose volume already persists the default path:
 
 ```env
+STORAGE_BACKEND=local
+STORAGE_PREFIX=pages/
+LOCAL_STORAGE_PATH=/data/uploads
+```
+
+For S3-compatible storage:
+
+```env
+STORAGE_BACKEND=s3
 S3_ENDPOINT=https://s3.eu-central-1.wasabisys.com
 S3_REGION=eu-central-1
 S3_BUCKET=sprag
@@ -81,8 +90,8 @@ E2E_INTAKE_REQUIRED=false
 ```
 
 Start with the bundled Caddy reverse proxy. The default Compose file pulls the
-released multi-arch image from GHCR and stores SQLite metadata in the named
-`sprag-data` volume:
+released multi-arch image from GHCR and stores SQLite metadata plus local file
+bodies (when selected) in the named `sprag-data` volume:
 
 ```bash
 SPRAG_DOMAIN=sprag.example.com docker compose up -d
@@ -110,7 +119,7 @@ First-run smoke test:
 
 ## Mode 2: Server-Blind Post-Quantum E2E Intake
 
-Use this when Sprag and S3 should only handle ciphertext.
+Use this when Sprag and the selected storage backend should only handle ciphertext.
 
 `.env`:
 
@@ -224,7 +233,7 @@ Important Tor notes:
 - `docker-compose.tor.yml` publishes no host ports. Tor connects internally to `sprag-app:8080`.
 - `ANONYMOUS_INGRESS=true` stores no uploader IP metadata. Login throttling is global; PIN throttling is page-scoped.
 - The `tor-hidden-service` Docker volume contains the onion identity. Back it up and protect it. Deleting it creates a new onion address.
-- Tor mode does not hide Sprag's outbound connection to a cloud S3 provider. Use local MinIO or private storage if storage-provider egress metadata matters.
+- Tor mode does not hide Sprag's outbound connection to a cloud S3 provider. Use `STORAGE_BACKEND=local`, local MinIO, or private storage if storage-provider egress metadata matters.
 
 ## From Source
 
@@ -259,7 +268,7 @@ The binary embeds the frontend and uses pure-Go SQLite, so no CGO runtime is req
 Back up these items together:
 
 - SQLite directory at `DB_PATH`, including `-wal` and `-shm` sidecar files
-- the S3 bucket/prefix configured by `S3_BUCKET` and `S3_PREFIX`
+- file bodies: `LOCAL_STORAGE_PATH`/`STORAGE_PREFIX` for the local backend, or the S3 bucket/prefix configured by `S3_BUCKET` and `S3_PREFIX`
 - `SESSION_SECRET`, because rotating it invalidates all sessions
 - `IP_HASH_SECRET`, if `IP_STORAGE_MODE=hmac-sha256`
 - every E2E private key generated for a page
@@ -270,7 +279,7 @@ For legal or compliance workflows, export the chain-of-custody manifest before m
 ## Troubleshooting
 
 **Startup says required config is missing.**
-Check `BASE_URL`, `SESSION_SECRET`, admin password or hash, and all required S3 values.
+Check `BASE_URL`, `SESSION_SECRET`, admin password or hash, `STORAGE_BACKEND`, and the selected backend's required values.
 
 **Admin login succeeds but the session does not stick.**
 Check `BASE_URL` and `COOKIE_SECURE`. Plain HTTP public origins are rejected in `auto` mode. HTTP `.onion`, localhost, and loopback are allowed.

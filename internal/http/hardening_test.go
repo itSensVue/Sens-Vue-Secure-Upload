@@ -204,7 +204,7 @@ func TestUploadDeletesBlobWhenRecordingFails(t *testing.T) {
 			AdminUsername: "admin",
 			AdminPassword: "correct-password",
 			MaxFileSize:   1024 * 1024,
-			S3Prefix:      "pages/",
+			StoragePrefix: "pages/",
 			SecureCookies: true,
 		},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),

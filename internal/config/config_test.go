@@ -39,6 +39,91 @@ func TestLoadFromLookupRejectsMissingRequiredValues(t *testing.T) {
 	}
 }
 
+func TestLoadFromLookupConfiguresLocalFilesystemWithoutS3(t *testing.T) {
+	values := baseValues()
+	values["STORAGE_BACKEND"] = "local"
+	values["LOCAL_STORAGE_PATH"] = "/srv/sprag/uploads"
+	values["STORAGE_PREFIX"] = "incoming/"
+	values["S3_PREFIX"] = "s3-only/"
+	delete(values, "S3_ENDPOINT")
+	delete(values, "S3_REGION")
+	delete(values, "S3_BUCKET")
+	delete(values, "S3_ACCESS_KEY")
+	delete(values, "S3_SECRET_KEY")
+
+	cfg, err := config.LoadFromLookup(lookupFrom(values))
+	if err != nil {
+		t.Fatalf("LoadFromLookup failed: %v", err)
+	}
+	if cfg.Storage.Backend != "local" {
+		t.Fatalf("storage backend = %q, want local", cfg.Storage.Backend)
+	}
+	if cfg.Storage.LocalPath != "/srv/sprag/uploads" {
+		t.Fatalf("local storage path = %q, want /srv/sprag/uploads", cfg.Storage.LocalPath)
+	}
+	if cfg.Storage.Prefix != "incoming/" {
+		t.Fatalf("storage prefix = %q, want incoming/", cfg.Storage.Prefix)
+	}
+}
+
+func TestLoadFromLookupDefaultsToS3Storage(t *testing.T) {
+	cfg, err := config.LoadFromLookup(lookupFrom(baseValues()))
+	if err != nil {
+		t.Fatalf("LoadFromLookup failed: %v", err)
+	}
+	if cfg.Storage.Backend != "s3" {
+		t.Fatalf("storage backend = %q, want s3", cfg.Storage.Backend)
+	}
+	if cfg.S3.Prefix != "pages/" {
+		t.Fatalf("S3 prefix = %q, want pages/", cfg.S3.Prefix)
+	}
+}
+
+func TestLoadFromLookupRejectsUnsupportedStorageBackend(t *testing.T) {
+	values := baseValues()
+	values["STORAGE_BACKEND"] = "tape"
+
+	_, err := config.LoadFromLookup(lookupFrom(values))
+	if err == nil {
+		t.Fatal("expected unsupported storage backend to fail")
+	}
+	if !strings.Contains(err.Error(), "STORAGE_BACKEND") {
+		t.Fatalf("expected STORAGE_BACKEND error, got %q", err.Error())
+	}
+}
+
+func TestLoadFromLookupKeepsS3PrefixIndependentFromStoragePrefix(t *testing.T) {
+	values := baseValues()
+	values["S3_PREFIX"] = "s3-objects/"
+	values["STORAGE_PREFIX"] = "local-objects/"
+
+	cfg, err := config.LoadFromLookup(lookupFrom(values))
+	if err != nil {
+		t.Fatalf("LoadFromLookup failed: %v", err)
+	}
+	if cfg.S3.Prefix != "s3-objects/" {
+		t.Fatalf("S3 prefix = %q, want s3-objects/", cfg.S3.Prefix)
+	}
+	if cfg.Storage.Prefix != "" {
+		t.Fatalf("local storage prefix = %q in S3 mode, want empty", cfg.Storage.Prefix)
+	}
+}
+
+func TestLoadFromLookupAllowsEmptyStoragePrefix(t *testing.T) {
+	values := baseValues()
+	values["STORAGE_BACKEND"] = "local"
+	values["STORAGE_PREFIX"] = ""
+	values["S3_PREFIX"] = "legacy/"
+
+	cfg, err := config.LoadFromLookup(lookupFrom(values))
+	if err != nil {
+		t.Fatalf("LoadFromLookup failed: %v", err)
+	}
+	if cfg.Storage.Prefix != "" {
+		t.Fatalf("storage prefix = %q, want empty", cfg.Storage.Prefix)
+	}
+}
+
 func TestLoadFromLookupAcceptsPasswordHashWithoutPlaintext(t *testing.T) {
 	values := baseValues()
 	delete(values, "ADMIN_PASSWORD")
@@ -359,6 +444,9 @@ func TestLoadFromLookupParsesDefaultsAndRedactsSecrets(t *testing.T) {
 	}
 	if !cfg.S3.UsePathStyle {
 		t.Fatal("expected S3 path-style addressing to be enabled")
+	}
+	if cfg.S3.Prefix != "incoming/" {
+		t.Fatalf("S3 prefix = %q, want incoming/", cfg.S3.Prefix)
 	}
 	redacted := cfg.Redacted()
 	if strings.Contains(redacted, "super-secret") || strings.Contains(redacted, "secret-key") || strings.Contains(redacted, "access-key") {

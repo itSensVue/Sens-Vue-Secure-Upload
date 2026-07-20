@@ -778,7 +778,7 @@ func TestNewRewritesExistingUploaderIPsWhenHMACStorageConfigured(t *testing.T) {
 			AdminUsername:     "admin",
 			AdminPassword:     "correct-password",
 			MaxFileSize:       1024 * 1024,
-			S3Prefix:          "pages/",
+			StoragePrefix:     "pages/",
 			IPStorageMode:     "hmac-sha256",
 			IPHashSecret:      secret,
 			AllowedExtensions: nil,
@@ -1218,7 +1218,7 @@ func newHandlerWithErr(t *testing.T, blobs blob.Store, tweak func(*httpapi.Confi
 		AdminPassword:     "correct-password",
 		MaxFileSize:       1024 * 1024,
 		AllowedExtensions: nil,
-		S3Prefix:          "pages/",
+		StoragePrefix:     "pages/",
 		SecureCookies:     true,
 	}
 	if tweak != nil {

@@ -17,8 +17,10 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -67,7 +69,10 @@ func TestNewHTTPConfigPreservesSecureCookieSetting(t *testing.T) {
 			Required:  true,
 			Algorithm: "ML-KEM-1024-P384-HKDF-SHA512-AES-256-GCM",
 		},
-		S3: config.S3Config{Prefix: "incoming/"},
+		Storage: config.StorageConfig{
+			Backend: config.StorageBackendLocal,
+			Prefix:  "incoming/",
+		},
 	}
 
 	httpCfg := newHTTPConfig(cfg)
@@ -86,6 +91,50 @@ func TestNewHTTPConfigPreservesSecureCookieSetting(t *testing.T) {
 	}
 	if !httpCfg.E2EIntake.Enabled || !httpCfg.E2EIntake.Required {
 		t.Fatalf("E2EIntake = %#v, want enabled and required", httpCfg.E2EIntake)
+	}
+}
+
+func TestNewHTTPConfigUsesS3PrefixForS3Backend(t *testing.T) {
+	cfg := config.Config{
+		Storage: config.StorageConfig{
+			Backend: config.StorageBackendS3,
+			Prefix:  "local-only/",
+		},
+		S3: config.S3Config{Prefix: "s3-only/"},
+	}
+
+	httpCfg := newHTTPConfig(cfg)
+
+	if httpCfg.StoragePrefix != "s3-only/" {
+		t.Fatalf("StoragePrefix = %q, want s3-only/", httpCfg.StoragePrefix)
+	}
+}
+
+func TestNewBlobStoreSelectsLocalFilesystem(t *testing.T) {
+	cfg := config.Config{
+		Storage: config.StorageConfig{
+			Backend:   "local",
+			LocalPath: filepath.Join(t.TempDir(), "objects"),
+		},
+	}
+	objects, err := newBlobStore(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newBlobStore failed: %v", err)
+	}
+	if err := objects.Upload(context.Background(), "pages/drop/upload/file.txt", strings.NewReader("payload"), "text/plain"); err != nil {
+		t.Fatalf("local Upload failed: %v", err)
+	}
+	body, err := objects.Download(context.Background(), "pages/drop/upload/file.txt")
+	if err != nil {
+		t.Fatalf("local Download failed: %v", err)
+	}
+	defer body.Close()
+	got, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("read local object: %v", err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("local object = %q, want payload", got)
 	}
 }
 

@@ -82,7 +82,7 @@ type Config struct {
 	IPHashSecret      []byte
 	MaxFileSize       int64
 	AllowedExtensions []string
-	S3Prefix          string
+	StoragePrefix     string
 	SecureCookies     bool
 	TrustedProxyHops  int
 	AnonymousIngress  bool
@@ -1109,7 +1109,7 @@ func (s *Server) effectiveAllowedExt(page store.Page) (allowed []string, restric
 }
 
 func (s *Server) objectKey(slug, uploadID, original string) string {
-	prefix := strings.Trim(s.cfg.S3Prefix, "/")
+	prefix := strings.Trim(s.cfg.StoragePrefix, "/")
 	name := sanitizeFilename(original)
 	parts := []string{slug, uploadID, name}
 	if prefix != "" {
@@ -2041,7 +2041,7 @@ func sanitizeFilename(name string) string {
 		return r
 	}, name)
 	name = strings.TrimSpace(name)
-	if name == "" || name == "." {
+	if name == "" || name == "." || name == ".." {
 		return "file"
 	}
 	return name

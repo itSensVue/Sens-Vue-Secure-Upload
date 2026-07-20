@@ -31,7 +31,9 @@ import (
 	"time"
 
 	sprag "github.com/elcamino/sprag"
+	"github.com/elcamino/sprag/internal/blob"
 	"github.com/elcamino/sprag/internal/config"
+	"github.com/elcamino/sprag/internal/filesystem"
 	httpapi "github.com/elcamino/sprag/internal/http"
 	s3store "github.com/elcamino/sprag/internal/s3"
 	"github.com/elcamino/sprag/internal/store"
@@ -141,14 +143,7 @@ func run(logger *slog.Logger) error {
 	}
 	defer db.Close()
 
-	objects, err := s3store.New(ctx, s3store.Config{
-		Endpoint:     cfg.S3.Endpoint,
-		Region:       cfg.S3.Region,
-		Bucket:       cfg.S3.Bucket,
-		AccessKey:    cfg.S3.AccessKey,
-		SecretKey:    cfg.S3.SecretKey,
-		UsePathStyle: cfg.S3.UsePathStyle,
-	})
+	objects, err := newBlobStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -188,6 +183,24 @@ func run(logger *slog.Logger) error {
 	}
 }
 
+func newBlobStore(ctx context.Context, cfg config.Config) (blob.Store, error) {
+	switch cfg.Storage.Backend {
+	case config.StorageBackendS3:
+		return s3store.New(ctx, s3store.Config{
+			Endpoint:     cfg.S3.Endpoint,
+			Region:       cfg.S3.Region,
+			Bucket:       cfg.S3.Bucket,
+			AccessKey:    cfg.S3.AccessKey,
+			SecretKey:    cfg.S3.SecretKey,
+			UsePathStyle: cfg.S3.UsePathStyle,
+		})
+	case config.StorageBackendLocal:
+		return filesystem.New(cfg.Storage.LocalPath)
+	default:
+		return nil, fmt.Errorf("unsupported storage backend %q", cfg.Storage.Backend)
+	}
+}
+
 // newHTTPServer bounds connection lifetimes without capping transfer time:
 // ReadHeaderTimeout stops slow-header connections and IdleTimeout reaps idle
 // keep-alive connections, but ReadTimeout/WriteTimeout stay unset because
@@ -203,6 +216,10 @@ func newHTTPServer(port string, handler http.Handler) *http.Server {
 }
 
 func newHTTPConfig(cfg config.Config) httpapi.Config {
+	storagePrefix := cfg.Storage.Prefix
+	if cfg.Storage.Backend == config.StorageBackendS3 {
+		storagePrefix = cfg.S3.Prefix
+	}
 	return httpapi.Config{
 		BaseURL:           cfg.BaseURL,
 		SessionSecret:     cfg.SessionSecret,
@@ -213,7 +230,7 @@ func newHTTPConfig(cfg config.Config) httpapi.Config {
 		IPHashSecret:      cfg.IPHashSecret,
 		MaxFileSize:       cfg.MaxFileSize,
 		AllowedExtensions: cfg.AllowedExtensions,
-		S3Prefix:          cfg.S3.Prefix,
+		StoragePrefix:     storagePrefix,
 		SecureCookies:     cfg.SecureCookies,
 		TrustedProxyHops:  cfg.TrustedProxyHops,
 		AnonymousIngress:  cfg.AnonymousIngress,

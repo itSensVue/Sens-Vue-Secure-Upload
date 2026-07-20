@@ -44,4 +44,4 @@ Before opening a pull request:
 
 ## Security-Sensitive Changes
 
-For changes touching authentication, upload slugs, PINs, receipts, E2E envelopes, S3 keys, Tor/onion mode, IP metadata, rate limiting, or logging, describe the attacker model in the pull request. A change that sounds privacy-positive but widens metadata exposure should be treated as a regression until proven otherwise.
+For changes touching authentication, upload slugs, PINs, receipts, E2E envelopes, storage keys, Tor/onion mode, IP metadata, rate limiting, or logging, describe the attacker model in the pull request. A change that sounds privacy-positive but widens metadata exposure should be treated as a regression until proven otherwise.

@@ -33,23 +33,29 @@ import (
 
 const defaultMaxFileSize int64 = 5 * 1024 * 1024 * 1024
 
+const (
+	StorageBackendS3    = "s3"
+	StorageBackendLocal = "local"
+)
+
 type Config struct {
-	Port              string    `json:"port"`
-	BaseURL           string    `json:"base_url"`
-	SessionSecret     []byte    `json:"-"`
-	AdminUsername     string    `json:"admin_username"`
-	AdminPassword     string    `json:"-"`
-	AdminPasswordHash string    `json:"-"`
-	IPStorageMode     string    `json:"ip_storage_mode"`
-	IPHashSecret      []byte    `json:"-"`
-	MaxFileSize       int64     `json:"max_file_size"`
-	AllowedExtensions []string  `json:"allowed_ext,omitempty"`
-	DBPath            string    `json:"db_path"`
-	TrustedProxyHops  int       `json:"trusted_proxy_hops"`
-	SecureCookies     bool      `json:"secure_cookies"`
-	AnonymousIngress  bool      `json:"anonymous_ingress"`
-	E2EIntake         E2EConfig `json:"e2e_intake"`
-	S3                S3Config  `json:"s3"`
+	Port              string        `json:"port"`
+	BaseURL           string        `json:"base_url"`
+	SessionSecret     []byte        `json:"-"`
+	AdminUsername     string        `json:"admin_username"`
+	AdminPassword     string        `json:"-"`
+	AdminPasswordHash string        `json:"-"`
+	IPStorageMode     string        `json:"ip_storage_mode"`
+	IPHashSecret      []byte        `json:"-"`
+	MaxFileSize       int64         `json:"max_file_size"`
+	AllowedExtensions []string      `json:"allowed_ext,omitempty"`
+	DBPath            string        `json:"db_path"`
+	TrustedProxyHops  int           `json:"trusted_proxy_hops"`
+	SecureCookies     bool          `json:"secure_cookies"`
+	AnonymousIngress  bool          `json:"anonymous_ingress"`
+	E2EIntake         E2EConfig     `json:"e2e_intake"`
+	Storage           StorageConfig `json:"storage"`
+	S3                S3Config      `json:"s3"`
 }
 
 type E2EConfig struct {
@@ -66,6 +72,12 @@ type S3Config struct {
 	SecretKey    string `json:"-"`
 	UsePathStyle bool   `json:"use_path_style"`
 	Prefix       string `json:"prefix"`
+}
+
+type StorageConfig struct {
+	Backend   string `json:"backend"`
+	Prefix    string `json:"prefix"`
+	LocalPath string `json:"local_path,omitempty"`
 }
 
 func Load() (Config, error) {
@@ -98,14 +110,36 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		AdminPasswordHash: get("ADMIN_PASSWORD_HASH", ""),
 		IPStorageMode:     "plain",
 		DBPath:            get("DB_PATH", "/data/sprag.db"),
-		S3: S3Config{
+		Storage: StorageConfig{
+			Backend: strings.ToLower(get("STORAGE_BACKEND", StorageBackendS3)),
+		},
+	}
+	switch cfg.Storage.Backend {
+	case StorageBackendS3:
+		cfg.S3 = S3Config{
 			Endpoint:  require("S3_ENDPOINT"),
 			Region:    require("S3_REGION"),
 			Bucket:    require("S3_BUCKET"),
 			AccessKey: require("S3_ACCESS_KEY"),
 			SecretKey: require("S3_SECRET_KEY"),
 			Prefix:    get("S3_PREFIX", "pages/"),
-		},
+		}
+		pathStyle := get("S3_USE_PATH_STYLE", "")
+		if pathStyle == "" {
+			pathStyle = get("S3_PATH_STYLE", "false")
+		}
+		usePathStyle, err := strconv.ParseBool(pathStyle)
+		if err != nil {
+			return Config{}, fmt.Errorf("S3_USE_PATH_STYLE must be a boolean")
+		}
+		cfg.S3.UsePathStyle = usePathStyle
+	case StorageBackendLocal:
+		cfg.Storage.LocalPath = get("LOCAL_STORAGE_PATH", "/data/uploads")
+		cfg.Storage.Prefix = get("STORAGE_PREFIX", "pages/")
+	case "":
+		return Config{}, fmt.Errorf("STORAGE_BACKEND must be s3 or local")
+	default:
+		return Config{}, fmt.Errorf("STORAGE_BACKEND must be s3 or local")
 	}
 
 	secret := require("SESSION_SECRET")
@@ -193,16 +227,6 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		Required:  e2eRequired,
 		Algorithm: e2eAlgorithm,
 	}
-
-	pathStyle := get("S3_USE_PATH_STYLE", "")
-	if pathStyle == "" {
-		pathStyle = get("S3_PATH_STYLE", "false")
-	}
-	usePathStyle, err := strconv.ParseBool(pathStyle)
-	if err != nil {
-		return Config{}, fmt.Errorf("S3_USE_PATH_STYLE must be a boolean")
-	}
-	cfg.S3.UsePathStyle = usePathStyle
 
 	if cfg.AdminPassword == "" && cfg.AdminPasswordHash == "" {
 		missing = append(missing, "ADMIN_PASSWORD or ADMIN_PASSWORD_HASH")

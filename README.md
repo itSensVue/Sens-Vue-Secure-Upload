@@ -30,7 +30,7 @@ An admin creates an unguessable intake page, the uploader submits files without 
 
 Sprag is named after a sprag clutch: it engages in one direction and freewheels in the other. The product has the same shape for files. Uploaders push files into an unguessable upload-page URL — they can never list, download, or even see what else has arrived. Only the authenticated admin can read what came in.
 
-With **server-blind E2E intake** enabled, the uploader's browser encrypts every file with **post-quantum hybrid cryptography** *before a single byte leaves the device*. The Go server and your S3 bucket only ever touch ciphertext. The admin decrypts client-side at download time. There is no plaintext for the server — or anyone who compromises it — to read.
+With **server-blind E2E intake** enabled, the uploader's browser encrypts every file with **post-quantum hybrid cryptography** *before a single byte leaves the device*. The Go server and your configured storage backend only ever touch ciphertext. The admin decrypts client-side at download time. There is no plaintext for the server — or anyone who compromises it — to read.
 
 > A SecureDrop-adjacent intake capability without SecureDrop's operational weight: optional Tor onion ingress, but no hardened workstation, no source accounts, no air-gapped review workflow, and no multi-server deployment requirement.
 
@@ -58,8 +58,8 @@ For deployment recipes, see [INSTALL.md](INSTALL.md). It covers plaintext intake
 - **One-way by construction.** The uploader API surface is exactly three routes. There is no listing endpoint a sender can reach. Knowing one page's URL reveals nothing about any other page or the admin area.
 - **No accounts for uploaders. Ever.** The unguessable URL *is* the capability. That same trusted channel also carries the page's public key, so server-blind encryption needs no separate PKI or key-exchange ceremony.
 - **Server-blind, post-quantum E2E.** Optional per-deployment, optional or required per-page. ML-KEM-1024 + P-384 hybrid KEM, HKDF-SHA-512, AES-256-GCM — encrypted in the browser before upload.
-- **Tiny and legible.** A single CGO-free Go binary with an embedded React frontend, one `.env`, one SQLite file, one S3 bucket. You can read the whole threat model in an afternoon.
-- **Bounded memory at any file size.** Uploads stream straight into an S3 multipart upload and downloads stream straight back out. A 5 GB file never lands on local disk or fills RAM.
+- **Tiny and legible.** A single CGO-free Go binary with an embedded React frontend, one `.env`, one SQLite file, and either local or S3-compatible file storage. You can read the whole threat model in an afternoon.
+- **Bounded memory at any file size.** Uploads and downloads stream through the selected storage backend. A 5 GB file is never buffered whole in RAM.
 - **Optional onion-only ingress.** Sprag can run behind a Tor onion service with no public host ports, while keeping the product shape as one-way intake rather than a full whistleblower platform.
 
 ## What Sprag is not
@@ -74,7 +74,7 @@ That restraint is the product: a sender can push files in through a capability U
 sequenceDiagram
     participant U as Uploader browser
     participant P as Sprag (Go server)
-    participant S as S3 bucket
+    participant S as File storage
     participant A as Admin browser
 
     Note over A: Admin generates an ML-KEM-1024 + P-384 keypair.<br/>Public key is attached to the upload page.<br/>Private key never leaves the admin device.
@@ -82,13 +82,13 @@ sequenceDiagram
     Note over U: Browser encrypts file and metadata locally:<br/>ML-KEM-1024 + P-384 -> HKDF-SHA-512 -> AES-256-GCM
     U->>P: POST ciphertext + opaque envelope
     P->>S: store {uuid}.sprag  (ciphertext only)
-    Note over P,S: Server and bucket never see plaintext,<br/>original filename, or any private key.
+    Note over P,S: Server and storage never see plaintext,<br/>original filename, or any private key.
     A->>P: GET ciphertext + envelope  (authenticated)
     P-->>A: ciphertext + envelope
     Note over A: Browser decrypts with the private key.<br/>Plaintext exists only on the two endpoints.
 ```
 
-Without E2E, Sprag is still a strict one-way intake box: streaming uploads to S3, unguessable slugs, optional PINs, and admin-only listing and download. E2E mode adds the server-blindness on top.
+Without E2E, Sprag is still a strict one-way intake box: streaming uploads to local or S3-compatible storage, unguessable slugs, optional PINs, and admin-only listing and download. E2E mode adds the server-blindness on top.
 
 ## Comparison notes
 
@@ -150,9 +150,9 @@ The category itself is not empty — self-hosted "reverse share" tools exist, an
 - **Rate limiting.** Admin login 5/min/client identifier, PIN attempts 10/min per slug+client identifier, keyed on the real client IP or its HMAC identifier (see `TRUSTED_PROXY_HOPS`). With `ANONYMOUS_INGRESS=true`, Sprag stores no uploader IP metadata and uses one global admin-login bucket plus page-scoped PIN buckets.
 - **Sessions.** Stateless HMAC-signed cookies, 7-day expiry, `HttpOnly` + `SameSite=Lax`. Cookies use the `Secure` attribute for HTTPS; `COOKIE_SECURE=auto` disables it only for localhost, loopback, and HTTP `.onion` origins where browsers would otherwise refuse to send the cookie.
 - **CSRF.** Admin mutations require the `X-Sprag-CSRF` custom header in addition to the same-site cookie.
-- **Streaming with hard caps.** The size limit is enforced by a counting reader while streaming; an oversized upload aborts the S3 multipart upload instead of trusting `Content-Length`. Files are never buffered whole in memory or on disk.
-- **Path-safe storage.** S3 keys use server-generated UUID paths (`S3_PREFIX/<slug>/<uuid>/<filename>`); the original filename is metadata only, so a malicious name can't traverse or collide.
-- **Downloads are always `Content-Disposition: attachment`**, never inline, so the bucket can't be used as an XSS host.
+- **Streaming with hard caps.** The size limit is enforced by a counting reader while streaming instead of trusting `Content-Length`; failed S3 multipart uploads are aborted and failed local uploads never publish their temporary file. Files are never buffered whole in memory.
+- **Path-safe storage.** Object keys use server-generated UUID paths (`S3_PREFIX/<slug>/<uuid>/<filename>` for S3, `STORAGE_PREFIX/<slug>/<uuid>/<filename>` locally); local access is rooted beneath `LOCAL_STORAGE_PATH`, and the original filename is metadata only, so a malicious name can't traverse or collide.
+- **Downloads are always `Content-Disposition: attachment`**, never inline, so stored objects can't be used as an XSS host.
 - **Secrets are never logged.** Startup echoes a redacted config.
 
 ## 60-second local start
@@ -161,7 +161,7 @@ The category itself is not empty — self-hosted "reverse share" tools exist, an
 cp .env.example .env
 openssl rand -base64 32   # put this in SESSION_SECRET
 docker compose run --rm sprag-app hash-password
-# put the printed hash in ADMIN_PASSWORD_HASH, then fill BASE_URL and S3_*
+# put the printed hash in ADMIN_PASSWORD_HASH, then choose local or S3 storage
 docker compose up -d
 ```
 
@@ -175,7 +175,7 @@ Prebuilt multi-arch images (amd64 + arm64) are published to the GitHub Container
 cp .env.example .env
 openssl rand -base64 32   # put this in SESSION_SECRET
 docker compose run --rm sprag-app hash-password 'your-admin-password'
-# put the printed hash in ADMIN_PASSWORD_HASH, then fill BASE_URL and S3_*
+# put the printed hash in ADMIN_PASSWORD_HASH, then choose local or S3 storage
 SPRAG_DOMAIN=sprag.example.com docker compose up -d
 ```
 
@@ -194,7 +194,7 @@ docker run -d --name sprag -p 8080:8080 \
   ghcr.io/elcamino/sprag:latest
 ```
 
-Running the server needs `BASE_URL`, `SESSION_SECRET`, the `S3_*` values, and one of `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH` in your `.env` (see [Configuration](#configuration)).
+Running the server needs `BASE_URL`, `SESSION_SECRET`, storage settings, and one of `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH` in your `.env` (see [Configuration](#configuration)).
 
 ## Prebuilt binaries
 
@@ -208,7 +208,7 @@ tar xzf sprag_v1.6.1_linux_amd64.tar.gz
 ./sprag_v1.6.1_linux_amd64/sprag   # loads a .env in the current directory if present
 ```
 
-The server still needs `BASE_URL`, `SESSION_SECRET`, the `S3_*` values, and an admin password (see [Configuration](#configuration)).
+The server still needs `BASE_URL`, `SESSION_SECRET`, storage settings, and an admin password (see [Configuration](#configuration)).
 
 ## Installation
 
@@ -224,7 +224,7 @@ For source-based setup, use `go run ./cmd/sprag hash-password` instead of the Do
 
 ## Configuration
 
-Sprag loads `.env` if present and then reads environment variables. Startup fails fast if required secrets or S3 values are missing. `ONION_BASE_URL` is a Docker Compose helper used by `docker-compose.tor.yml`; it is mapped to `BASE_URL` inside the app container.
+Sprag loads `.env` if present and then reads environment variables. Startup fails fast if required secrets or backend-specific storage values are missing. `ONION_BASE_URL` is a Docker Compose helper used by `docker-compose.tor.yml`; it is mapped to `BASE_URL` inside the app container.
 
 | Variable | Required | Default | Notes |
 |---|:---:|---|---|
@@ -246,18 +246,21 @@ Sprag loads `.env` if present and then reads environment variables. Startup fail
 | `TRUSTED_PROXY_HOPS` | | `1` | Number of trusted proxies appending to `X-Forwarded-For`. `0` = directly exposed. |
 | `ANONYMOUS_INGRESS` | | `false` | Set `true` for Tor/onion ingress. Sprag stores no uploader IP and uses global/page-scoped abuse buckets instead of apparent per-IP buckets. |
 | `DB_PATH` | | `/data/sprag.db` | SQLite path (WAL mode; back up the whole directory). |
-| `S3_ENDPOINT` | Yes | | S3-compatible endpoint. |
-| `S3_REGION` | Yes | | |
-| `S3_BUCKET` | Yes | | |
-| `S3_ACCESS_KEY` | Yes | | |
-| `S3_SECRET_KEY` | Yes | | |
+| `STORAGE_BACKEND` | | `s3` | File-body backend: `s3` or `local`. |
+| `STORAGE_PREFIX` | | `pages/` | Key namespace used only by the local filesystem backend. |
+| `LOCAL_STORAGE_PATH` | | `/data/uploads` | Root directory used only when `STORAGE_BACKEND=local`. Created at startup. |
+| `S3_ENDPOINT` | Yes* | | S3-compatible endpoint; required only for the S3 backend. |
+| `S3_REGION` | Yes* | | Required only for the S3 backend. |
+| `S3_BUCKET` | Yes* | | Required only for the S3 backend. |
+| `S3_ACCESS_KEY` | Yes* | | Required only for the S3 backend. |
+| `S3_SECRET_KEY` | Yes* | | Required only for the S3 backend. |
 | `S3_USE_PATH_STYLE` | | `false` | `true` for MinIO. |
-| `S3_PREFIX` | | `pages/` | Key namespace inside the bucket. |
+| `S3_PREFIX` | | `pages/` | Key namespace used only by the S3 backend. |
 | `E2E_INTAKE_ENABLED` | | `false` | Enables server-blind E2E intake. |
 | `E2E_INTAKE_REQUIRED` | | `false` | Rejects plaintext pages/uploads. Requires `E2E_INTAKE_ENABLED=true`. |
 | `E2E_INTAKE_ALGORITHM` | | `ML-KEM-1024-P384-HKDF-SHA512-AES-256-GCM` | The only supported profile. |
 
-\* Exactly one of `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH` is required.
+\* Exactly one of `ADMIN_PASSWORD` / `ADMIN_PASSWORD_HASH` is required. Storage requirements depend on `STORAGE_BACKEND` as noted above.
 
 `MAX_FILE_SIZE` defaults to 5 GiB. Admin sessions are stateless signed cookies (7-day expiry). Rotating `SESSION_SECRET` invalidates every outstanding session immediately; changing only the admin password does not, so rotate the secret too if you need to force existing sessions to log out.
 
@@ -279,15 +282,15 @@ When `E2E_INTAKE_ENABLED=true`, admins can create pages whose uploads are encryp
 
 The admin UI can optionally store a generated private key encrypted in browser IndexedDB. The stored value is wrapped with a key derived from an admin-supplied passphrase via memory-hard Argon2id and sealed with AES-256-GCM; Sprag never saves the passphrase. This is safer than keeping an unencrypted downloaded key, but weaker than a password manager or offline backup, and still does not protect against a compromised admin-origin script after the key is unlocked.
 
-**What server-blind does and does not protect against.** A trust product lives or dies on the precision of this claim, so state it plainly. Sprag's E2E mode protects you against the passive, at-rest adversary: a stolen S3 bucket, a compromised admin session, an honest-but-curious operator, a backup that walks out the door, a full server compromise after the fact. In every one of those, the attacker gets ciphertext and an opaque envelope and nothing else. The true line is *the operator cannot read stored uploads; a breach yields only ciphertext.* What it does **not** defend against is an actively malicious or compromised host at upload time: the encryption runs in JavaScript the server delivers, and the public key arrives over the same channel, so a host that deliberately serves modified code or swaps the key could defeat it. The admin sees the key fingerprint in the dashboard, but it is not yet surfaced on the upload page for a source to compare out of band. This is the same caveat that applies to Firefox Send and to webmail-based "E2E"; it is inherent to browser-delivered cryptography, not a flaw in the construction. There is also no forward secrecy — the recipient key is static, so a leaked private key exposes the whole historical bucket — and because E2E encryption happens in a single pass in the uploader's browser, keep E2E uploads to a few hundred megabytes for now. The line you must **not** read into Sprag is "zero-trust even against the host who runs it."
+**What server-blind does and does not protect against.** A trust product lives or dies on the precision of this claim, so state it plainly. Sprag's E2E mode protects you against the passive, at-rest adversary: a stolen S3 bucket or local upload directory, a compromised admin session, an honest-but-curious operator, a backup that walks out the door, a full server compromise after the fact. In every one of those, the attacker gets ciphertext and an opaque envelope and nothing else. The true line is *the operator cannot read stored uploads; a breach yields only ciphertext.* What it does **not** defend against is an actively malicious or compromised host at upload time: the encryption runs in JavaScript the server delivers, and the public key arrives over the same channel, so a host that deliberately serves modified code or swaps the key could defeat it. The admin sees the key fingerprint in the dashboard, but it is not yet surfaced on the upload page for a source to compare out of band. This is the same caveat that applies to Firefox Send and to webmail-based "E2E"; it is inherent to browser-delivered cryptography, not a flaw in the construction. There is also no forward secrecy — the recipient key is static, so a leaked private key exposes all historical uploads — and because E2E encryption happens in a single pass in the uploader's browser, keep E2E uploads to a few hundred megabytes for now. The line you must **not** read into Sprag is "zero-trust even against the host who runs it."
 
 ## Storage
 
-Metadata is stored in SQLite at `DB_PATH`. The database runs in WAL mode with a busy timeout so concurrent uploads don't fail under lock contention; this creates `-wal` and `-shm` sidecar files next to `DB_PATH`, so back up the whole directory. File bodies are streamed to S3-compatible object storage under `S3_PREFIX/<slug>/<uuid>/<filename>`. In E2E mode the stored object is opaque ciphertext (a `.sprag` blob), the content type is forced to `application/octet-stream`, and the original filename lives only inside the encrypted envelope — never in the object key.
+Metadata is stored in SQLite at `DB_PATH`. The database runs in WAL mode with a busy timeout so concurrent uploads don't fail under lock contention; this creates `-wal` and `-shm` sidecar files next to `DB_PATH`, so back up the whole directory. File bodies are streamed either to S3-compatible object storage under `S3_PREFIX` or beneath `LOCAL_STORAGE_PATH` under `STORAGE_PREFIX`. Local uploads are written to a private temporary file and atomically renamed only after the complete stream is synced. In E2E mode the stored object is opaque ciphertext (a `.sprag` blob), the content type is forced to `application/octet-stream`, and the original filename lives only inside the encrypted envelope — never in the object key.
 
 ## Tech stack
 
-- **Backend:** Go (stdlib `net/http` + `chi`), pure-Go SQLite (`modernc.org/sqlite`, CGO-free), AWS SDK v2 for any S3-compatible endpoint, `log/slog` JSON logging.
+- **Backend:** Go (stdlib `net/http` + `chi`), pure-Go SQLite (`modernc.org/sqlite`, CGO-free), local filesystem or AWS SDK v2 for any S3-compatible endpoint, `log/slog` JSON logging.
 - **Frontend:** React + TypeScript + Vite + Tailwind CSS, built to `frontend/dist/` and embedded into the binary.
 - **Crypto:** bcrypt for passwords/PINs; `@noble/post-quantum` (ML-KEM-1024) + WebCrypto (P-384 ECDH, HKDF-SHA-512, AES-256-GCM) for E2E; memory-hard Argon2id (`@noble/hashes`) for the optional in-browser private-key store.
 - **Deployment:** multi-stage Dockerfile to `gcr.io/distroless/static`, `docker-compose.yml` with Caddy for automatic HTTPS, and `docker-compose.tor.yml` for onion-only Tor ingress.
