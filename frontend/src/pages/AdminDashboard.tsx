@@ -57,6 +57,7 @@ import {
   publicIdentityFromPrivate
 } from "../e2eCrypto";
 import { loadStoredPrivateKey, saveStoredPrivateKey } from "../e2eKeyStore";
+import { buildDecryptedZip, safeArchiveName } from "../e2eZip";
 import { ThemeSwitch } from "../ThemeSwitch";
 
 type PageForm = {
@@ -341,6 +342,46 @@ export default function AdminDashboard() {
       delete next[page.id];
       return next;
     });
+  }
+
+  async function downloadEncryptedZip() {
+    if (!selected) return;
+    setError("");
+    try {
+      const rawKey = pagePrivateKeys[selected.id] ?? "";
+      if (!rawKey.trim()) {
+        setDownloadUnlockPrompt((current) => nextDownloadUnlockPrompt(current, selected.id, rawKey));
+        return;
+      }
+      const privateIdentity = parsePrivateIdentity(rawKey);
+      setBusy(true);
+      const decrypted: { name: string; blob: Blob }[] = [];
+      for (const file of files) {
+        if (file.encryption_mode !== "e2e-v1" || !file.encryption_envelope) continue;
+        const response = await fetch(`/api/admin/pages/${selected.id}/files/${file.id}`, {
+          credentials: "include"
+        });
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}`);
+        }
+        const value = await decryptEncryptedUpload(
+          await response.arrayBuffer(),
+          file.encryption_envelope,
+          privateIdentity
+        );
+        decrypted.push({ name: value.name, blob: value.blob });
+      }
+      if (decrypted.length === 0) {
+        throw new Error("No encrypted files to zip");
+      }
+      const zipBlob = await buildDecryptedZip(decrypted);
+      const base = safeArchiveName(selected.title) || selected.slug;
+      downloadBlob(zipBlob, `${base}.zip`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not decrypt files");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function downloadEncryptedFile(file: UploadFile) {
@@ -673,7 +714,17 @@ export default function AdminDashboard() {
                   <UploadCloud size={18} />
                   Files
                 </h3>
-                {!selected.e2e_enabled && (
+                {selected.e2e_enabled ? (
+                  <button
+                    className="secondary-action"
+                    onClick={downloadEncryptedZip}
+                    disabled={busy || files.length === 0}
+                    title="Decrypt all files in the browser and download as a zip"
+                  >
+                    <FileDown size={17} />
+                    {busy ? "Zipping…" : "Zip (decrypt)"}
+                  </button>
+                ) : (
                   <a className="secondary-action" href={`/api/admin/pages/${selected.id}/zip`}>
                     <FileDown size={17} />
                     Zip
