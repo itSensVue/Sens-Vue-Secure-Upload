@@ -197,7 +197,7 @@ export default function Upload() {
   }
 
   if (!page) {
-    return <main className="route-loading">Sprag</main>;
+    return <main className="route-loading">Sprag + Sens-Vue</main>;
   }
 
   const locked = page.pin_required && !pinUnlocked;
@@ -210,7 +210,7 @@ export default function Upload() {
             <FileUp size={22} />
           </span>
           <div>
-            <p className="eyebrow">Sprag</p>
+            <p className="eyebrow">Sprag + Sens-Vue</p>
             <h1>{page.title}</h1>
             {page.description && <p>{page.description}</p>}
           </div>

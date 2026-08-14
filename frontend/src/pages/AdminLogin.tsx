@@ -47,7 +47,7 @@ export default function AdminLogin() {
         <div className="mark">
           <LockKeyhole size={22} />
         </div>
-        <h1>Sprag</h1>
+        <h1>Sprag + Sens-Vue</h1>
         <form onSubmit={submit} className="stack">
           <label>
             <span>Username</span>

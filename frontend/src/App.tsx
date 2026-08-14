@@ -44,7 +44,7 @@ export default function App() {
     <>
       {routeKind !== "home" && <BrandMotif />}
       {routeKind !== "admin-dashboard" && <ThemeSwitch fixed />}
-      <Suspense fallback={<div className="route-loading">Sprag</div>}>{route}</Suspense>
+      <Suspense fallback={<div className="route-loading">Sprag + Sens-Vue</div>}>{route}</Suspense>
     </>
   );
 }

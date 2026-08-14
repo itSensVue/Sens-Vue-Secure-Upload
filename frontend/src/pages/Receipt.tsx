@@ -48,7 +48,7 @@ export default function Receipt() {
   }
 
   if (!receipt) {
-    return <main className="route-loading">Sprag</main>;
+    return <main className="route-loading">Sprag + Sens-Vue</main>;
   }
 
   return <ReceiptView receipt={receipt} token={token} />;
@@ -68,7 +68,7 @@ export function ReceiptView({ receipt, token }: ReceiptViewProps) {
             {receipt.status === "received" ? <CheckCircle2 size={22} /> : <CircleDot size={22} />}
           </span>
           <div>
-            <p className="eyebrow">Sprag receipt</p>
+            <p className="eyebrow">Sprag + Sens-Vue receipt</p>
             <h1>Submission {receiptLabels[receipt.status].toLowerCase()}</h1>
             <p className="muted">{formatDate(receipt.submitted_at)}</p>
           </div>

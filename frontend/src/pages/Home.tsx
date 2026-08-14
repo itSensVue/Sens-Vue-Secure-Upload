@@ -25,7 +25,7 @@ export default function Home() {
         <span>Admin</span>
         <ArrowRight size={16} />
       </a>
-      <h1 className="home-mark" aria-label="Sprag">
+      <h1 className="home-mark" aria-label="Sprag + Sens-Vue">
         S
       </h1>
     </main>

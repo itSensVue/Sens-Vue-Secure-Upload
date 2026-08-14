@@ -411,7 +411,7 @@ export default function AdminDashboard() {
     <main className="admin-shell">
       <header className="admin-topbar">
         <div>
-          <p className="eyebrow">Sprag</p>
+          <p className="eyebrow">Sprag + Sens-Vue</p>
           <h1>Intake pages</h1>
         </div>
         <div className="topbar-actions">
