@@ -411,7 +411,7 @@ export default function AdminDashboard() {
     <main className="admin-shell">
       <header className="admin-topbar">
         <div>
-          <p className="eyebrow">Sprag + Sens-Vue</p>
+          <p className="eyebrow">Sprag</p>
           <h1>Intake pages</h1>
         </div>
         <div className="topbar-actions">
@@ -714,26 +714,28 @@ export default function AdminDashboard() {
                   <UploadCloud size={18} />
                   Files
                 </h3>
-                {selected.e2e_enabled ? (
-                  <button
-                    className="secondary-action"
-                    onClick={downloadEncryptedZip}
-                    disabled={busy || files.length === 0}
-                    title="Decrypt all files in the browser and download as a zip"
-                  >
-                    <FileDown size={17} />
-                    {busy ? "Zipping…" : "Zip (decrypt)"}
-                  </button>
-                ) : (
-                  <a className="secondary-action" href={`/api/admin/pages/${selected.id}/zip`}>
-                    <FileDown size={17} />
-                    Zip
+                <div className="file-toolbar-actions">
+                  {selected.e2e_enabled ? (
+                    <button
+                      className="secondary-action"
+                      onClick={downloadEncryptedZip}
+                      disabled={busy || files.length === 0}
+                      title="Decrypt all files in the browser and download as a zip"
+                    >
+                      <FileDown size={17} />
+                      {busy ? "Zipping…" : "Zip (decrypt)"}
+                    </button>
+                  ) : (
+                    <a className="secondary-action" href={`/api/admin/pages/${selected.id}/zip`}>
+                      <FileDown size={17} />
+                      Zip
+                    </a>
+                  )}
+                  <a className="secondary-action" href={`/api/admin/pages/${selected.id}/manifest`}>
+                    <FileText size={17} />
+                    Manifest
                   </a>
-                )}
-                <a className="secondary-action" href={`/api/admin/pages/${selected.id}/manifest`}>
-                  <FileText size={17} />
-                  Manifest
-                </a>
+                </div>
               </div>
 
               <div className="file-table">
