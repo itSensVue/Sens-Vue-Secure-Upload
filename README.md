@@ -242,6 +242,7 @@ Sprag loads `.env` if present and then reads environment variables. Startup fail
 | `IP_STORAGE_MODE` | | `plain` | `plain` stores resolved uploader IPs. `hmac-sha256` stores deterministic `ip-hmac-sha256:v1:` identifiers and rewrites existing plaintext uploader IPs at startup. |
 | `IP_HASH_SECRET` | Yes* | | Base64; required only when `IP_STORAGE_MODE=hmac-sha256`; must decode to at least 32 bytes. Protect it: IPs are low-entropy, so the secret is what prevents offline enumeration. |
 | `MAX_FILE_SIZE` | | `5368709120` (5 GiB) | Global default; per-page limits may only lower it. |
+| `UPLOAD_RATE_LIMIT` | | `30` | Max uploads per page per minute (per client). |
 | `ALLOWED_EXT` | | *(any)* | Comma list, e.g. `pdf,png,zip`. A hard ceiling per-page lists may narrow but not widen. |
 | `TRUSTED_PROXY_HOPS` | | `1` | Number of trusted proxies appending to `X-Forwarded-For`. `0` = directly exposed. |
 | `ANONYMOUS_INGRESS` | | `false` | Set `true` for Tor/onion ingress. Sprag stores no uploader IP and uses global/page-scoped abuse buckets instead of apparent per-IP buckets. |

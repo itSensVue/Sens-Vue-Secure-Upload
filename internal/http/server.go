@@ -840,7 +840,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "pin_required", "PIN required")
 		return
 	}
-	if !s.uploadRate.Allow(s.uploadRateKey(page.Slug, r), 30, time.Minute, s.clock()) {
+	if !s.uploadRate.Allow(s.uploadRateKey(page.Slug, r), s.cfg.UploadRateLimit, time.Minute, s.clock()) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many uploads")
 		return
 	}

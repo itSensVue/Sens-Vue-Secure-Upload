@@ -213,6 +213,32 @@ func TestLoadFromLookupRejectsInvalidAnonymousIngress(t *testing.T) {
 	}
 }
 
+func TestLoadFromLookupParsesUploadRateLimit(t *testing.T) {
+	values := baseValues()
+	values["UPLOAD_RATE_LIMIT"] = "75"
+
+	cfg, err := config.LoadFromLookup(lookupFrom(values))
+	if err != nil {
+		t.Fatalf("LoadFromLookup failed: %v", err)
+	}
+	if cfg.UploadRateLimit != 75 {
+		t.Fatalf("unexpected upload rate limit %d", cfg.UploadRateLimit)
+	}
+}
+
+func TestLoadFromLookupRejectsInvalidUploadRateLimit(t *testing.T) {
+	values := baseValues()
+	values["UPLOAD_RATE_LIMIT"] = "0"
+
+	_, err := config.LoadFromLookup(lookupFrom(values))
+	if err == nil {
+		t.Fatal("expected invalid UPLOAD_RATE_LIMIT to fail")
+	}
+	if !strings.Contains(err.Error(), "UPLOAD_RATE_LIMIT") {
+		t.Fatalf("expected UPLOAD_RATE_LIMIT error, got %q", err.Error())
+	}
+}
+
 func TestLoadFromLookupUsesSecureCookiesForHTTPSBaseURL(t *testing.T) {
 	cfg, err := config.LoadFromLookup(lookupFrom(baseValues()))
 	if err != nil {
@@ -413,6 +439,7 @@ func TestLoadFromLookupParsesDefaultsAndRedactsSecrets(t *testing.T) {
 		"S3_PREFIX":      "incoming/",
 		"S3_PATH_STYLE":  "true",
 		"MAX_FILE_SIZE":  "1048576",
+		"UPLOAD_RATE_LIMIT": "15",
 		"ALLOWED_EXT":    "pdf, PNG ,zip",
 	}
 
@@ -432,6 +459,9 @@ func TestLoadFromLookupParsesDefaultsAndRedactsSecrets(t *testing.T) {
 	}
 	if cfg.MaxFileSize != 1048576 {
 		t.Fatalf("unexpected max file size %d", cfg.MaxFileSize)
+	}
+	if cfg.UploadRateLimit != 15 {
+		t.Fatalf("unexpected upload rate limit %d", cfg.UploadRateLimit)
 	}
 	if cfg.TrustedProxyHops != 1 {
 		t.Fatalf("expected default TrustedProxyHops 1, got %d", cfg.TrustedProxyHops)

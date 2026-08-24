@@ -48,6 +48,7 @@ type Config struct {
 	IPStorageMode     string        `json:"ip_storage_mode"`
 	IPHashSecret      []byte        `json:"-"`
 	MaxFileSize       int64         `json:"max_file_size"`
+	UploadRateLimit   int           `json:"upload_rate_limit"`
 	AllowedExtensions []string      `json:"allowed_ext,omitempty"`
 	DBPath            string        `json:"db_path"`
 	TrustedProxyHops  int           `json:"trusted_proxy_hops"`
@@ -160,6 +161,12 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf("MAX_FILE_SIZE must be a positive integer")
 	}
 	cfg.MaxFileSize = parsedMax
+
+	uploadRateLimit, err := strconv.Atoi(get("UPLOAD_RATE_LIMIT", "30"))
+	if err != nil || uploadRateLimit <= 0 {
+		return Config{}, fmt.Errorf("UPLOAD_RATE_LIMIT must be a positive integer")
+	}
+	cfg.UploadRateLimit = uploadRateLimit
 	cfg.AllowedExtensions = parseExtList(get("ALLOWED_EXT", ""))
 
 	hops, err := strconv.Atoi(get("TRUSTED_PROXY_HOPS", "1"))
