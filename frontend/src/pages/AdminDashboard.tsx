@@ -257,6 +257,23 @@ export default function AdminDashboard() {
     await loadPages();
   }
 
+  async function deleteSubmission(group: SubmissionFileGroup) {
+    if (!selected) return;
+    const count = group.fileCount;
+    const noun = count === 1 ? "file" : "files";
+    if (!window.confirm(`Delete this submission and its ${count} ${noun}? This cannot be undone.`)) return;
+    setError("");
+    try {
+      await api<void>(`/api/admin/pages/${selected.id}/submissions/${encodeURIComponent(group.submissionID)}`, {
+        method: "DELETE"
+      });
+      await loadFiles(selected.id);
+      await loadPages();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete submission");
+    }
+  }
+
   async function updateReceiptStatus(group: SubmissionFileGroup, status: ReceiptStatus) {
     if (!selected) return;
     setError("");
@@ -783,6 +800,13 @@ export default function AdminDashboard() {
                             Receipt
                           </a>
                         )}
+                        <button
+                          className="icon-button danger"
+                          onClick={() => deleteSubmission(group)}
+                          title="Delete submission and its files"
+                        >
+                          <Trash2 size={17} />
+                        </button>
                       </div>
                     </div>
                     <div className="submission-files">

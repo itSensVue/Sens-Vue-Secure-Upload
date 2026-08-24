@@ -106,6 +106,77 @@ func TestSQLiteStoreCreatesPagesAndAggregatesUploads(t *testing.T) {
 	}
 }
 
+func TestDeleteSubmissionRemovesEnvelopeAndReturnsBlobKeys(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "sprag.db"))
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	page, err := db.CreatePage(ctx, store.PageCreate{
+		Slug:  "delpageslug000",
+		Title: "Bulk delete",
+	})
+	if err != nil {
+		t.Fatalf("CreatePage failed: %v", err)
+	}
+
+	target := "88888888-8888-4888-8888-888888888888"
+	for _, s3 := range []string{"a/pdf-one", "b/pdf-two"} {
+		if _, err := db.CreateUpload(ctx, store.UploadCreate{
+			PageID:       page.ID,
+			S3Key:        s3,
+			OriginalName: s3,
+			SizeBytes:    1,
+			SubmissionID: target,
+		}); err != nil {
+			t.Fatalf("CreateUpload failed: %v", err)
+		}
+	}
+	if _, err := db.CreateUpload(ctx, store.UploadCreate{
+		PageID:       page.ID,
+		S3Key:        "c/keep",
+		OriginalName: "keep.pdf",
+		SizeBytes:    1,
+		SubmissionID: "99999999-9999-4999-9999-999999999999",
+	}); err != nil {
+		t.Fatalf("CreateUpload failed: %v", err)
+	}
+
+	keys, err := db.DeleteSubmission(ctx, page.ID, target)
+	if err != nil {
+		t.Fatalf("DeleteSubmission failed: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("DeleteSubmission returned %d keys, want 2", len(keys))
+	}
+
+	files, err := db.ListUploads(ctx, page.ID)
+	if err != nil {
+		t.Fatalf("ListUploads failed: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 remaining upload, got %d", len(files))
+	}
+	if files[0].S3Key != "c/keep" {
+		t.Fatalf("wrong upload survived: %s", files[0].S3Key)
+	}
+
+	// The envelope is gone, so a second delete is a clean not-found.
+	if _, err := db.DeleteSubmission(ctx, page.ID, target); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("second DeleteSubmission err = %v, want ErrNotFound", err)
+	}
+
+	// The backup submission is untouched.
+	if keep, err := db.GetSubmissionEnvelope(ctx, page.ID, "99999999-9999-4999-9999-999999999999"); err != nil {
+		t.Fatalf("unrelated submission envelope missing: %v", err)
+	} else if keep.ID == 0 {
+		t.Fatalf("unrelated submission envelope has id 0")
+	}
+}
+
+
 // CreateUpload performs three writes (submission envelope, upload row, custody
 // event). A failure partway through must leave no partial state behind: an
 // upload row without its upload.accepted custody event would silently break the

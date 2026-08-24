@@ -292,6 +292,60 @@ func TestAdminCanUpdateReceiptStatusOnly(t *testing.T) {
 	}
 }
 
+func TestAdminCanDeleteWholeSubmission(t *testing.T) {
+	handler, blobs := newTestHandler(t)
+	session := loginAdmin(t, handler)
+	slug := createPageSlug(t, handler, session, map[string]any{"title": "Bulk delete"})
+
+	submissionID := "88888888-8888-4888-8888-888888888888"
+	for _, name := range []string{"one.pdf", "two.pdf"} {
+		upload := performMultipartFields(t, handler, "/api/u/"+slug, map[string]string{
+			"submission_id": submissionID,
+		}, "file", name, []byte(name), nil)
+		if upload.Code != http.StatusCreated {
+			t.Fatalf("upload %s status = %d body=%s", name, upload.Code, upload.Body.String())
+		}
+	}
+	if len(blobs.objects) != 2 {
+		t.Fatalf("expected two object writes, got %d", len(blobs.objects))
+	}
+
+	// Another submission on the same page must survive the bulk delete.
+	other := "99999999-9999-4999-9999-999999999999"
+	keep := performMultipartFields(t, handler, "/api/u/"+slug, map[string]string{
+		"submission_id": other,
+	}, "file", "keep.pdf", []byte("keep"), nil)
+	if keep.Code != http.StatusCreated {
+		t.Fatalf("keep upload status = %d body=%s", keep.Code, keep.Body.String())
+	}
+
+	del := perform(t, handler, http.MethodDelete, "/api/admin/pages/1/submissions/"+submissionID, nil, session, csrfHeader())
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("delete submission status = %d body=%s", del.Code, del.Body.String())
+	}
+	if len(blobs.objects) != 1 {
+		t.Fatalf("expected one object after bulk delete, got %d", len(blobs.objects))
+	}
+
+	files := perform(t, handler, http.MethodGet, "/api/admin/pages/1/files", nil, session, nil)
+	if files.Code != http.StatusOK {
+		t.Fatalf("files status = %d body=%s", files.Code, files.Body.String())
+	}
+	if strings.Contains(files.Body.String(), "one.pdf") || strings.Contains(files.Body.String(), "two.pdf") {
+		t.Fatalf("deleted submission files still listed: %s", files.Body.String())
+	}
+	if !strings.Contains(files.Body.String(), "keep.pdf") {
+		t.Fatalf("unrelated submission file missing after bulk delete: %s", files.Body.String())
+	}
+
+	// Re-deleting the same submission is a clean not-found.
+	repeat := perform(t, handler, http.MethodDelete, "/api/admin/pages/1/submissions/"+submissionID, nil, session, csrfHeader())
+	if repeat.Code != http.StatusNotFound {
+		t.Fatalf("repeat delete status = %d body=%s, want 404", repeat.Code, repeat.Body.String())
+	}
+}
+
+
 func TestAdminManifestIncludesStoredObjectHashesAndHandlingLog(t *testing.T) {
 	handler, _ := newTestHandler(t)
 	session := loginAdmin(t, handler)

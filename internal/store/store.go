@@ -709,6 +709,59 @@ func (s *SQLite) DeleteUpload(ctx context.Context, pageID, uploadID int64) error
 	return nil
 }
 
+// DeleteSubmission removes every upload in one submission envelope plus the
+// envelope itself. It returns the s3 keys of the removed objects so the caller
+// can delete them from blob storage; upload rows disappear but their custody
+// events survive (upload_id / submission_envelope_id set NULL) as the audit
+// record of what was destroyed. The submission row itself is removed too.
+// Returns ErrNotFound when the page has no such submission.
+func (s *SQLite) DeleteSubmission(ctx context.Context, pageID int64, submissionID string) ([]string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := getSubmissionEnvelope(ctx, tx, pageID, submissionID)
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT s3_key FROM uploads WHERE page_id = ? AND submission_envelope_id = ?`, pageID, envelope.ID)
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			_ = rows.Close()
+			_ = tx.Rollback()
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Close(); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM uploads WHERE page_id = ? AND submission_envelope_id = ?`, pageID, envelope.ID); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM submission_envelopes WHERE id = ? AND page_id = ?`, envelope.ID, pageID); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
 func (s *SQLite) GetReceipt(ctx context.Context, token string) (Receipt, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {

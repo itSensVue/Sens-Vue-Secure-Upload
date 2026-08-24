@@ -222,6 +222,7 @@ func (s *Server) routes(staticFS http.FileSystem) http.Handler {
 		r.Get("/api/admin/pages/{pageID}/files", s.handleListFiles)
 		r.Get("/api/admin/pages/{pageID}/files/{fileID}", s.handleDownloadFile)
 		r.With(s.requireCSRF).Delete("/api/admin/pages/{pageID}/files/{fileID}", s.handleDeleteFile)
+		r.With(s.requireCSRF).Delete("/api/admin/pages/{pageID}/submissions/{submissionID}", s.handleDeleteSubmission)
 		r.Get("/api/admin/pages/{pageID}/zip", s.handleZip)
 		r.Get("/api/admin/pages/{pageID}/manifest", s.handleManifest)
 		r.With(s.requireCSRF).Patch("/api/admin/pages/{pageID}/submissions/{submissionID}/receipt", s.handleUpdateReceiptStatus)
@@ -568,6 +569,51 @@ func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.DeleteUpload(r.Context(), pageID, fileID); err != nil {
+		s.serverError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) {
+	pageID, ok := parseIDParam(w, r, "pageID")
+	if !ok {
+		return
+	}
+	submissionID := strings.TrimSpace(chi.URLParam(r, "submissionID"))
+	if submissionID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_submission_id", "submission id is required")
+		return
+	}
+	page, err := s.store.GetPage(r.Context(), pageID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	keys, err := s.store.DeleteSubmission(r.Context(), pageID, submissionID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "submission not found")
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	for _, key := range keys {
+		if err := s.blobs.Delete(r.Context(), key); err != nil {
+			s.serverError(w, err)
+			return
+		}
+	}
+	if _, err := s.store.RecordCustodyEvent(r.Context(), store.CustodyEventCreate{
+		PageID:    pageID,
+		EventType: "submission.deleted",
+		Actor:     "admin",
+		Detail: adminActionDetail(page, map[string]any{
+			"submission_id": submissionID,
+			"files":         len(keys),
+		}),
+	}); err != nil {
 		s.serverError(w, err)
 		return
 	}
