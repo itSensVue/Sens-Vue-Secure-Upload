@@ -230,6 +230,7 @@ func newHTTPConfig(cfg config.Config) httpapi.Config {
 		IPHashSecret:      cfg.IPHashSecret,
 		MaxFileSize:       cfg.MaxFileSize,
 		AllowedExtensions: cfg.AllowedExtensions,
+		UploadRateLimit:   cfg.UploadRateLimit,
 		StoragePrefix:     storagePrefix,
 		SecureCookies:     cfg.SecureCookies,
 		TrustedProxyHops:  cfg.TrustedProxyHops,

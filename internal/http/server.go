@@ -82,6 +82,7 @@ type Config struct {
 	IPHashSecret      []byte
 	MaxFileSize       int64
 	AllowedExtensions []string
+	UploadRateLimit   int
 	StoragePrefix     string
 	SecureCookies     bool
 	TrustedProxyHops  int
