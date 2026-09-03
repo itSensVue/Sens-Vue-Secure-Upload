@@ -632,7 +632,6 @@ select:focus {
   align-items: start;
   gap: 12px;
   padding: 4px 4px 8px;
-  border-bottom: 1px solid var(--border);
 }
 
 .submission-header strong,
@@ -666,6 +665,10 @@ select:focus {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-inset);
 }
 
 .report-info {
