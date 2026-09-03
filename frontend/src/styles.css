@@ -660,6 +660,39 @@ select:focus {
   gap: 8px;
 }
 
+.report-control {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-inset);
+}
+
+.report-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-strong);
+  font-size: 0.8rem;
+}
+
+.report-info svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.report-info strong,
+.report-info small {
+  display: block;
+}
+
+.report-info small {
+  color: var(--text-muted);
+}
+
 .receipt-status-field {
   width: 148px;
   gap: 4px;
@@ -901,7 +934,8 @@ select:focus {
 
 .receipt-status-mark.received,
 .receipt-status-mark.reviewed,
-.receipt-status-mark.downloaded {
+.receipt-status-mark.downloaded,
+.receipt-status-mark.completed {
   color: var(--success);
   border-color: var(--success);
 }
@@ -909,6 +943,35 @@ select:focus {
 .receipt-status-mark.rejected {
   color: var(--danger);
   border-color: var(--danger);
+}
+
+.report-download {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 14px;
+  border: 1px solid var(--success);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--success) 8%, var(--bg-card));
+}
+
+.report-download svg {
+  color: var(--success);
+  flex-shrink: 0;
+}
+
+.report-download strong,
+.report-download small {
+  display: block;
+}
+
+.report-download small {
+  color: var(--text-muted);
+}
+
+.report-download .primary-action {
+  margin-left: auto;
 }
 
 .receipt-facts {

@@ -15,14 +15,15 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, CircleDot, FileCheck2, Hash, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDot, Download, FileCheck2, Hash, XCircle } from "lucide-react";
 import { api, formatBytes, formatDate, PublicReceipt, ReceiptStatus } from "../api";
 
 const receiptLabels: Record<ReceiptStatus, string> = {
   received: "Received",
   reviewed: "Reviewed",
   rejected: "Rejected",
-  downloaded: "Downloaded"
+  downloaded: "Downloaded",
+  completed: "Report ready"
 };
 
 export default function Receipt() {
@@ -65,7 +66,13 @@ export function ReceiptView({ receipt, token }: ReceiptViewProps) {
       <section className="receipt-panel">
         <div className="upload-heading">
           <span className={`mark receipt-status-mark ${receipt.status}`}>
-            {receipt.status === "received" ? <CheckCircle2 size={22} /> : <CircleDot size={22} />}
+            {receipt.status === "received" ? (
+              <CheckCircle2 size={22} />
+            ) : receipt.status === "completed" ? (
+              <FileCheck2 size={22} />
+            ) : (
+              <CircleDot size={22} />
+            )}
           </span>
           <div>
             <p className="eyebrow">Sprag + Sens-Vue receipt</p>
@@ -73,6 +80,22 @@ export function ReceiptView({ receipt, token }: ReceiptViewProps) {
             <p className="muted">{formatDate(receipt.submitted_at)}</p>
           </div>
         </div>
+
+        {receipt.report && (
+          <div className="report-download">
+            <FileCheck2 size={22} />
+            <span>
+              <strong>Report ready</strong>
+              <small>
+                {receipt.report.name} · {formatBytes(receipt.report.size)}
+              </small>
+            </span>
+            <a className="primary-action" href={`/api/r/${encodeURIComponent(token)}/report`}>
+              <Download size={17} />
+              Download report
+            </a>
+          </div>
+        )}
 
         <div className="receipt-facts">
           <div>

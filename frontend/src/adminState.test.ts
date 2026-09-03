@@ -120,7 +120,8 @@ describe("admin page state", () => {
         submission_uploaded_at: "2026-06-17T10:00:00Z",
         receipt_token: "receipt-a",
         receipt_status: "received",
-        receipt_status_updated_at: "2026-06-17T10:00:03Z"
+        receipt_status_updated_at: "2026-06-17T10:00:03Z",
+        report: { name: "result.pdf", size: 99, uploaded_at: "2026-06-17T11:00:00Z" }
       },
       {
         id: 1,
@@ -156,7 +157,8 @@ describe("admin page state", () => {
       uploadedAt: "2026-06-17T10:00:00Z",
       receiptToken: "receipt-a",
       receiptStatus: "received",
-      receiptStatusUpdatedAt: "2026-06-17T10:00:03Z"
+      receiptStatusUpdatedAt: "2026-06-17T10:00:03Z",
+      report: { name: "result.pdf", size: 99, uploaded_at: "2026-06-17T11:00:00Z" }
     });
     expect(groups[0].files.map((file) => file.name)).toEqual(["two.txt", "one.txt"]);
     expect(groups[1]).toMatchObject({
@@ -164,7 +166,8 @@ describe("admin page state", () => {
       fileCount: 1,
       totalBytes: 3,
       receiptToken: "receipt-b",
-      receiptStatus: "reviewed"
+      receiptStatus: "reviewed",
+      report: null
     });
   });
 

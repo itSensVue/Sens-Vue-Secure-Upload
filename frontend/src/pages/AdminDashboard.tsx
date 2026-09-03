@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import {
   Archive,
@@ -80,7 +80,7 @@ const emptyForm: PageForm = {
   e2e_enabled: false
 };
 
-const receiptStatuses: ReceiptStatus[] = ["received", "reviewed", "rejected", "downloaded"];
+const receiptStatuses: ReceiptStatus[] = ["received", "reviewed", "rejected", "downloaded", "completed"];
 
 export default function AdminDashboard() {
   const [pages, setPages] = useState<PageSummary[]>([]);
@@ -99,6 +99,8 @@ export default function AdminDashboard() {
   const [downloadUnlockPrompt, setDownloadUnlockPrompt] = useState<DownloadUnlockPrompt | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const reportInputRef = useRef<HTMLInputElement>(null);
+  const [reportTarget, setReportTarget] = useState<SubmissionFileGroup | null>(null);
 
   const selected = useMemo(() => selectedPageForID(pages, selectedID), [pages, selectedID]);
   const files = useMemo(() => filesVisibleForSelectedPage(loadedFiles, selected), [loadedFiles, selected]);
@@ -285,6 +287,44 @@ export default function AdminDashboard() {
       await loadFiles(selected.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update receipt status");
+    }
+  }
+
+  function promptReportUpload(group: SubmissionFileGroup) {
+    setReportTarget(group);
+    reportInputRef.current?.click();
+  }
+
+  async function uploadReport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !selected || !reportTarget) return;
+    const group = reportTarget;
+    setReportTarget(null);
+    setError("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      await api(`/api/admin/pages/${selected.id}/submissions/${encodeURIComponent(group.submissionID)}/report`, {
+        method: "POST",
+        body: form
+      });
+      await loadFiles(selected.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not upload report");
+    }
+  }
+
+  async function deleteReport(group: SubmissionFileGroup) {
+    if (!selected || !window.confirm(`Delete the report for submission ${shortSubmissionID(group.submissionID)}?`)) return;
+    setError("");
+    try {
+      await api<void>(`/api/admin/pages/${selected.id}/submissions/${encodeURIComponent(group.submissionID)}/report`, {
+        method: "DELETE"
+      });
+      await loadFiles(selected.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete report");
     }
   }
 
@@ -800,6 +840,41 @@ export default function AdminDashboard() {
                             Receipt
                           </a>
                         )}
+                        {group.receiptToken && (
+                          <span className="report-control">
+                            {group.report ? (
+                              <>
+                                <span className="report-info">
+                                  <FileText size={14} />
+                                  <span>
+                                    <strong>{group.report.name}</strong>
+                                    <small>
+                                      {formatBytes(group.report.size)}
+                                      {selected.e2e_enabled ? " · not E2E-encrypted" : ""}
+                                    </small>
+                                  </span>
+                                </span>
+                                <a className="secondary-action" href={`/r/${group.receiptToken}/report`}>
+                                  <Download size={17} />
+                                  Download
+                                </a>
+                                <button className="secondary-action" onClick={() => promptReportUpload(group)}>
+                                  <UploadCloud size={17} />
+                                  Replace
+                                </button>
+                                <button className="secondary-action danger" onClick={() => deleteReport(group)}>
+                                  <Trash2 size={17} />
+                                  Delete
+                                </button>
+                              </>
+                            ) : (
+                              <button className="secondary-action" onClick={() => promptReportUpload(group)}>
+                                <UploadCloud size={17} />
+                                Upload report
+                              </button>
+                            )}
+                          </span>
+                        )}
                         <button
                           className="icon-button danger"
                           onClick={() => deleteSubmission(group)}
@@ -840,6 +915,7 @@ export default function AdminDashboard() {
                 ))}
                 {files.length === 0 && <div className="empty-state">No files yet</div>}
               </div>
+              <input ref={reportInputRef} type="file" hidden onChange={uploadReport} />
             </>
           ) : (
             <div className="empty-state">No pages yet</div>

@@ -36,4 +36,44 @@ describe("ReceiptView", () => {
     expect(html).toContain("Receipt ID");
     expect(html).toContain("receipt-token-123");
   });
+
+  it("shows a download block when a report is attached", () => {
+    const html = renderToStaticMarkup(
+      <ReceiptView
+        token="receipt-token-123"
+        receipt={{
+          status: "completed",
+          submitted_at: "2026-06-19T10:00:00Z",
+          updated_at: "2026-06-19T10:00:00Z",
+          file_count: 1,
+          total_size: 512,
+          report: { name: "result.pdf", size: 2048, uploaded_at: "2026-06-20T10:00:00Z" }
+        }}
+      />
+    );
+
+    expect(html).toContain("Report ready");
+    expect(html).toContain("result.pdf");
+    expect(html).toContain("2.00 KiB");
+    expect(html).toContain("/api/r/receipt-token-123/report");
+  });
+
+  it("shows no download block when no report is attached", () => {
+    const html = renderToStaticMarkup(
+      <ReceiptView
+        token="receipt-token-123"
+        receipt={{
+          status: "received",
+          submitted_at: "2026-06-19T10:00:00Z",
+          updated_at: "2026-06-19T10:00:00Z",
+          file_count: 1,
+          total_size: 512,
+          report: null
+        }}
+      />
+    );
+
+    expect(html).not.toContain("Download report");
+    expect(html).not.toContain("/api/r/receipt-token-123/report");
+  });
 });

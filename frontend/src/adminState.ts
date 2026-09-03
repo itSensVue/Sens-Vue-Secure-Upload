@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-import { PageSummary, ReceiptStatus, UploadFile } from "./api";
+import { PageSummary, ReceiptStatus, ReportInfo, UploadFile } from "./api";
 
 export type LoadedFiles = {
   pageID: number;
@@ -34,13 +34,15 @@ export type SubmissionFileGroup = {
   receiptToken?: string;
   receiptStatus?: ReceiptStatus;
   receiptStatusUpdatedAt?: string;
+  report?: ReportInfo | null;
   files: UploadFile[];
   fileCount: number;
   totalBytes: number;
 };
 
 export const receiptStatusLabel = "File status";
-export const receiptStatusHelp = "Shown on the uploader's receipt link. This does not grant file access.";
+export const receiptStatusHelp =
+  "Shown on the uploader's receipt link. This does not grant file access. A report, when attached, is delivered through the same receipt link.";
 export const sealActionHelp =
   "Seals this page: closes public uploads, prevents reopening or page deletion, and records later admin actions in the custody log.";
 
@@ -71,6 +73,7 @@ export function groupFilesBySubmission(files: UploadFile[]): SubmissionFileGroup
         receiptToken: file.receipt_token,
         receiptStatus: file.receipt_status,
         receiptStatusUpdatedAt: file.receipt_status_updated_at,
+        report: file.report ?? null,
         files: [],
         fileCount: 0,
         totalBytes: 0

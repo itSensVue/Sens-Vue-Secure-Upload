@@ -58,9 +58,16 @@ export type UploadFile = {
   receipt_status?: ReceiptStatus;
   receipt_status_updated_at?: string;
   uploaded_at: string;
+  report?: ReportInfo | null;
 };
 
-export type ReceiptStatus = "received" | "reviewed" | "rejected" | "downloaded";
+export type ReceiptStatus = "received" | "reviewed" | "rejected" | "downloaded" | "completed";
+
+export type ReportInfo = {
+  name: string;
+  size: number;
+  uploaded_at: string;
+};
 
 export type CreatedUpload = {
   id: number;
@@ -78,6 +85,7 @@ export type PublicReceipt = {
   updated_at: string;
   file_count: number;
   total_size: number;
+  report?: ReportInfo | null;
 };
 
 export type PublicPageE2E = {

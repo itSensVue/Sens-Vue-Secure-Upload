@@ -50,6 +50,10 @@ const (
 	ReceiptStatusReviewed   = "reviewed"
 	ReceiptStatusRejected   = "rejected"
 	ReceiptStatusDownloaded = "downloaded"
+	// ReceiptStatusCompleted marks a submission whose report is ready for the
+	// partner to pick up via the receipt link. It is set automatically when a
+	// report is attached and reverted to received when it is removed.
+	ReceiptStatusCompleted = "completed"
 )
 
 func isUniqueViolation(err error) bool {
@@ -140,6 +144,10 @@ type Upload struct {
 	ReceiptStatus        string     `json:"receipt_status,omitempty"`
 	ReceiptStatusUpdated *time.Time `json:"receipt_status_updated_at,omitempty"`
 	UploadedAt           time.Time  `json:"uploaded_at"`
+	// Report is the submission's attached report, repeated on every file of the
+	// envelope so the admin file list can show report state without a second
+	// query. At most one report exists per envelope.
+	Report *Report `json:"report,omitempty"`
 }
 
 type UploadCreate struct {
@@ -180,6 +188,33 @@ type Receipt struct {
 	UpdatedAt   time.Time
 	FileCount   int64
 	TotalBytes  int64
+	// Report is non-nil when the admin has attached a report for this
+	// submission. The unique index on reports.submission_envelope_id keeps it
+	// at most one row, so the receipt join never inflates the file count.
+	Report *Report
+}
+
+// Report is the admin-attached return-channel document for one submission.
+// It is stored like an intake blob; only the unguessable receipt token grants
+// download. Unlike intake files it is server-readable plaintext (the partner
+// holds no E2E key), which intentionally narrows the server-blind promise to
+// this one return channel.
+type Report struct {
+	ID                   int64     `json:"id,omitempty"`
+	PageID               int64     `json:"-"`
+	SubmissionEnvelopeID int64     `json:"-"`
+	S3Key                string    `json:"-"`
+	OriginalName         string    `json:"name"`
+	SizeBytes            int64     `json:"size"`
+	ContentType          string    `json:"content_type,omitempty"`
+	UploadedAt           time.Time `json:"uploaded_at"`
+}
+
+type ReportCreate struct {
+	S3Key        string
+	OriginalName string
+	SizeBytes    int64
+	ContentType  string
 }
 
 type CustodyEvent struct {
@@ -205,7 +240,7 @@ type CustodyEventCreate struct {
 
 func ValidReceiptStatus(status string) bool {
 	switch status {
-	case ReceiptStatusReceived, ReceiptStatusReviewed, ReceiptStatusRejected, ReceiptStatusDownloaded:
+	case ReceiptStatusReceived, ReceiptStatusReviewed, ReceiptStatusRejected, ReceiptStatusDownloaded, ReceiptStatusCompleted:
 		return true
 	default:
 		return false
@@ -299,6 +334,16 @@ CREATE TABLE IF NOT EXISTS uploads (
   object_hash_algorithm TEXT,
   uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+CREATE TABLE IF NOT EXISTS reports (
+  id INTEGER PRIMARY KEY,
+  submission_envelope_id INTEGER NOT NULL REFERENCES submission_envelopes(id) ON DELETE CASCADE,
+  s3_key TEXT NOT NULL,
+  original_name TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  content_type TEXT,
+  uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_envelope ON reports(submission_envelope_id);
 CREATE TABLE IF NOT EXISTS custody_events (
   id INTEGER PRIMARY KEY,
   page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
@@ -659,9 +704,11 @@ SELECT u.id, u.page_id, u.s3_key, u.original_name, u.size_bytes, coalesce(u.cont
        coalesce(u.encryption_mode, ''), coalesce(u.encryption_algorithm, ''), coalesce(u.encryption_envelope, ''),
        coalesce(u.object_sha512, ''), coalesce(u.object_hash_algorithm, ''),
        coalesce(se.receipt_token, ''), coalesce(se.receipt_status, ''), se.receipt_status_updated_at,
-       u.uploaded_at
+       u.uploaded_at,
+       r.original_name, r.size_bytes, r.uploaded_at
 FROM uploads u
 LEFT JOIN submission_envelopes se ON se.id = u.submission_envelope_id
+LEFT JOIN reports r ON r.submission_envelope_id = u.submission_envelope_id
 WHERE u.page_id = ?
 ORDER BY coalesce(se.created_at, u.uploaded_at) DESC, se.id DESC, u.uploaded_at DESC, u.id DESC`, pageID)
 	if err != nil {
@@ -690,9 +737,11 @@ SELECT u.id, u.page_id, u.s3_key, u.original_name, u.size_bytes, coalesce(u.cont
        coalesce(u.encryption_mode, ''), coalesce(u.encryption_algorithm, ''), coalesce(u.encryption_envelope, ''),
        coalesce(u.object_sha512, ''), coalesce(u.object_hash_algorithm, ''),
        coalesce(se.receipt_token, ''), coalesce(se.receipt_status, ''), se.receipt_status_updated_at,
-       u.uploaded_at
+       u.uploaded_at,
+       r.original_name, r.size_bytes, r.uploaded_at
 FROM uploads u
 LEFT JOIN submission_envelopes se ON se.id = u.submission_envelope_id
+LEFT JOIN reports r ON r.submission_envelope_id = u.submission_envelope_id
 WHERE u.page_id = ? AND u.id = ?`, pageID, uploadID)
 	return scanUpload(row)
 }
@@ -713,22 +762,24 @@ func (s *SQLite) DeleteUpload(ctx context.Context, pageID, uploadID int64) error
 // envelope itself. It returns the s3 keys of the removed objects so the caller
 // can delete them from blob storage; upload rows disappear but their custody
 // events survive (upload_id / submission_envelope_id set NULL) as the audit
-// record of what was destroyed. The submission row itself is removed too.
+// record of what was destroyed. The submission row itself is removed too, and
+// any attached report row cascades away — its blob key is returned alongside
+// the upload keys so the caller can delete the object as well.
 // Returns ErrNotFound when the page has no such submission.
-func (s *SQLite) DeleteSubmission(ctx context.Context, pageID int64, submissionID string) ([]string, error) {
+func (s *SQLite) DeleteSubmission(ctx context.Context, pageID int64, submissionID string) ([]string, string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	envelope, err := getSubmissionEnvelope(ctx, tx, pageID, submissionID)
 	if err != nil {
 		_ = tx.Rollback()
-		return nil, err
+		return nil, "", err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT s3_key FROM uploads WHERE page_id = ? AND submission_envelope_id = ?`, pageID, envelope.ID)
 	if err != nil {
 		_ = tx.Rollback()
-		return nil, err
+		return nil, "", err
 	}
 	var keys []string
 	for rows.Next() {
@@ -736,30 +787,168 @@ func (s *SQLite) DeleteSubmission(ctx context.Context, pageID int64, submissionI
 		if err := rows.Scan(&key); err != nil {
 			_ = rows.Close()
 			_ = tx.Rollback()
-			return nil, err
+			return nil, "", err
 		}
 		keys = append(keys, key)
 	}
 	if err := rows.Close(); err != nil {
 		_ = tx.Rollback()
-		return nil, err
+		return nil, "", err
 	}
 	if err := rows.Err(); err != nil {
 		_ = tx.Rollback()
-		return nil, err
+		return nil, "", err
+	}
+	var reportKey string
+	err = tx.QueryRowContext(ctx, `SELECT s3_key FROM reports WHERE submission_envelope_id = ?`, envelope.ID).Scan(&reportKey)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return nil, "", err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM uploads WHERE page_id = ? AND submission_envelope_id = ?`, pageID, envelope.ID); err != nil {
 		_ = tx.Rollback()
-		return nil, err
+		return nil, "", err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM submission_envelopes WHERE id = ? AND page_id = ?`, envelope.ID, pageID); err != nil {
 		_ = tx.Rollback()
-		return nil, err
+		return nil, "", err
 	}
 	if err := tx.Commit(); err != nil {
+		return nil, "", err
+	}
+	return keys, reportKey, nil
+}
+
+// PutReport stores the report for a submission, replacing any previous one
+// (the unique index on submission_envelope_id enforces one report per
+// submission). It returns the previous blob key — empty when there was none —
+// so the caller can delete the replaced object. Returns ErrNotFound when the
+// page has no such submission.
+func (s *SQLite) PutReport(ctx context.Context, pageID int64, submissionID string, in ReportCreate) (Report, string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Report{}, "", err
+	}
+	envelope, err := getSubmissionEnvelope(ctx, tx, pageID, submissionID)
+	if err != nil {
+		_ = tx.Rollback()
+		return Report{}, "", err
+	}
+	var oldKey string
+	err = tx.QueryRowContext(ctx, `SELECT s3_key FROM reports WHERE submission_envelope_id = ?`, envelope.ID).Scan(&oldKey)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return Report{}, "", err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO reports (submission_envelope_id, s3_key, original_name, size_bytes, content_type, uploaded_at)
+VALUES (?, ?, ?, ?, nullif(?, ''), strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+ON CONFLICT(submission_envelope_id) DO UPDATE SET
+  s3_key = excluded.s3_key,
+  original_name = excluded.original_name,
+  size_bytes = excluded.size_bytes,
+  content_type = excluded.content_type,
+  uploaded_at = excluded.uploaded_at`,
+		envelope.ID, in.S3Key, in.OriginalName, in.SizeBytes, in.ContentType); err != nil {
+		_ = tx.Rollback()
+		return Report{}, "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return Report{}, "", err
+	}
+	report, err := s.getReportByEnvelopeID(ctx, envelope.ID)
+	if err != nil {
+		return Report{}, "", err
+	}
+	return report, oldKey, nil
+}
+
+func (s *SQLite) GetReport(ctx context.Context, pageID int64, submissionID string) (Report, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT r.id, se.page_id, r.submission_envelope_id, r.s3_key, r.original_name, r.size_bytes, coalesce(r.content_type, ''), r.uploaded_at
+FROM reports r
+JOIN submission_envelopes se ON se.id = r.submission_envelope_id
+WHERE se.page_id = ? AND se.public_id = ?`, pageID, submissionID)
+	return scanReport(row)
+}
+
+// GetReportByToken resolves a report by its receipt token — the public
+// download path. The token is the capability; no other lookup exists.
+func (s *SQLite) GetReportByToken(ctx context.Context, token string) (Report, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return Report{}, ErrNotFound
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT r.id, se.page_id, r.submission_envelope_id, r.s3_key, r.original_name, r.size_bytes, coalesce(r.content_type, ''), r.uploaded_at
+FROM reports r
+JOIN submission_envelopes se ON se.id = r.submission_envelope_id
+WHERE se.receipt_token = ?`, token)
+	return scanReport(row)
+}
+
+func (s *SQLite) getReportByEnvelopeID(ctx context.Context, envelopeID int64) (Report, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT r.id, se.page_id, r.submission_envelope_id, r.s3_key, r.original_name, r.size_bytes, coalesce(r.content_type, ''), r.uploaded_at
+FROM reports r
+JOIN submission_envelopes se ON se.id = r.submission_envelope_id
+WHERE r.submission_envelope_id = ?`, envelopeID)
+	return scanReport(row)
+}
+
+// DeleteReport removes the report row and returns its blob key so the caller
+// can delete the object. Returns ErrNotFound when there is no report.
+func (s *SQLite) DeleteReport(ctx context.Context, pageID int64, submissionID string) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	envelope, err := getSubmissionEnvelope(ctx, tx, pageID, submissionID)
+	if err != nil {
+		_ = tx.Rollback()
+		return "", err
+	}
+	var key string
+	err = tx.QueryRowContext(ctx, `SELECT s3_key FROM reports WHERE submission_envelope_id = ?`, envelope.ID).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return "", ErrNotFound
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM reports WHERE submission_envelope_id = ?`, envelope.ID); err != nil {
+		_ = tx.Rollback()
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+// ListReportKeys returns the blob keys of every report on a page, for
+// page-delete blob cleanup.
+func (s *SQLite) ListReportKeys(ctx context.Context, pageID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT r.s3_key
+FROM reports r
+JOIN submission_envelopes se ON se.id = r.submission_envelope_id
+WHERE se.page_id = ?`, pageID)
+	if err != nil {
 		return nil, err
 	}
-	return keys, nil
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, rows.Err()
 }
 
 func (s *SQLite) GetReceipt(ctx context.Context, token string) (Receipt, error) {
@@ -770,15 +959,21 @@ func (s *SQLite) GetReceipt(ctx context.Context, token string) (Receipt, error) 
 	row := s.db.QueryRowContext(ctx, `
 SELECT se.receipt_token, coalesce(se.receipt_status, ?), se.created_at,
        coalesce(se.receipt_status_updated_at, se.created_at),
-       count(u.id), coalesce(sum(u.size_bytes), 0)
+       count(u.id), coalesce(sum(u.size_bytes), 0),
+       r.original_name, r.size_bytes, r.uploaded_at
 FROM submission_envelopes se
 LEFT JOIN uploads u ON u.submission_envelope_id = se.id
+LEFT JOIN reports r ON r.submission_envelope_id = se.id
 WHERE se.receipt_token = ?
 GROUP BY se.id`, ReceiptStatusReceived, token)
 	var receipt Receipt
 	var submitted string
 	var updated string
-	err := row.Scan(&receipt.Token, &receipt.Status, &submitted, &updated, &receipt.FileCount, &receipt.TotalBytes)
+	var reportName sql.NullString
+	var reportSize sql.NullInt64
+	var reportUploaded sql.NullString
+	err := row.Scan(&receipt.Token, &receipt.Status, &submitted, &updated, &receipt.FileCount, &receipt.TotalBytes,
+		&reportName, &reportSize, &reportUploaded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Receipt{}, ErrNotFound
 	}
@@ -792,6 +987,17 @@ GROUP BY se.id`, ReceiptStatusReceived, token)
 	receipt.UpdatedAt, err = parseDBTime(updated)
 	if err != nil {
 		return Receipt{}, err
+	}
+	if reportName.Valid && reportName.String != "" {
+		uploaded, err := parseDBTime(reportUploaded.String)
+		if err != nil {
+			return Receipt{}, err
+		}
+		receipt.Report = &Report{
+			OriginalName: reportName.String,
+			SizeBytes:    reportSize.Int64,
+			UploadedAt:   uploaded,
+		}
 	}
 	return receipt, nil
 }
@@ -1023,17 +1229,40 @@ func scanSubmissionEnvelope(row scanner) (SubmissionEnvelope, error) {
 	return envelope, nil
 }
 
+func scanReport(row scanner) (Report, error) {
+	var report Report
+	var uploaded string
+	err := row.Scan(&report.ID, &report.PageID, &report.SubmissionEnvelopeID, &report.S3Key, &report.OriginalName,
+		&report.SizeBytes, &report.ContentType, &uploaded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Report{}, ErrNotFound
+	}
+	if err != nil {
+		return Report{}, err
+	}
+	parsed, err := parseDBTime(uploaded)
+	if err != nil {
+		return Report{}, err
+	}
+	report.UploadedAt = parsed
+	return report, nil
+}
+
 func scanUpload(row scanner) (Upload, error) {
 	var upload Upload
 	var submissionCreated sql.NullString
 	var receiptUpdated sql.NullString
+	var reportName sql.NullString
+	var reportSize sql.NullInt64
+	var reportUploaded sql.NullString
 	var uploaded string
 	err := row.Scan(&upload.ID, &upload.PageID, &upload.S3Key, &upload.OriginalName, &upload.SizeBytes, &upload.ContentType, &upload.UploaderIP,
 		&upload.SubmissionID, &submissionCreated,
 		&upload.EncryptionMode, &upload.EncryptionAlgorithm, &upload.EncryptionEnvelope,
 		&upload.ObjectSHA512, &upload.ObjectHashAlgorithm,
 		&upload.ReceiptToken, &upload.ReceiptStatus, &receiptUpdated,
-		&uploaded)
+		&uploaded,
+		&reportName, &reportSize, &reportUploaded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Upload{}, ErrNotFound
 	}
@@ -1057,6 +1286,17 @@ func scanUpload(row scanner) (Upload, error) {
 			return Upload{}, err
 		}
 		upload.ReceiptStatusUpdated = &updated
+	}
+	if reportName.Valid && reportName.String != "" {
+		reportUploadedAt, err := parseDBTime(reportUploaded.String)
+		if err != nil {
+			return Upload{}, err
+		}
+		upload.Report = &Report{
+			OriginalName: reportName.String,
+			SizeBytes:    reportSize.Int64,
+			UploadedAt:   reportUploadedAt,
+		}
 	}
 	upload.UploadedAt = parsed
 	return upload, nil

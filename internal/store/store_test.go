@@ -144,12 +144,15 @@ func TestDeleteSubmissionRemovesEnvelopeAndReturnsBlobKeys(t *testing.T) {
 		t.Fatalf("CreateUpload failed: %v", err)
 	}
 
-	keys, err := db.DeleteSubmission(ctx, page.ID, target)
+	keys, reportKey, err := db.DeleteSubmission(ctx, page.ID, target)
 	if err != nil {
 		t.Fatalf("DeleteSubmission failed: %v", err)
 	}
 	if len(keys) != 2 {
 		t.Fatalf("DeleteSubmission returned %d keys, want 2", len(keys))
+	}
+	if reportKey != "" {
+		t.Fatalf("DeleteSubmission report key = %q, want empty", reportKey)
 	}
 
 	files, err := db.ListUploads(ctx, page.ID)
@@ -164,7 +167,7 @@ func TestDeleteSubmissionRemovesEnvelopeAndReturnsBlobKeys(t *testing.T) {
 	}
 
 	// The envelope is gone, so a second delete is a clean not-found.
-	if _, err := db.DeleteSubmission(ctx, page.ID, target); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := db.DeleteSubmission(ctx, page.ID, target); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("second DeleteSubmission err = %v, want ErrNotFound", err)
 	}
 
@@ -479,6 +482,230 @@ VALUES (9, 1, 'pages/legacy/file/report.pdf', 'report.pdf', 12, '203.0.113.9', '
 	}
 	if receipt.Status != "received" || receipt.FileCount != 1 || receipt.TotalBytes != 12 {
 		t.Fatalf("legacy receipt = %#v, want received/1 file/12 bytes", receipt)
+	}
+}
+
+func TestSQLiteStoreReportLifecycle(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "sprag.db"))
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	page, err := db.CreatePage(ctx, store.PageCreate{
+		Slug:  "report-page-1",
+		Title: "Report intake",
+	})
+	if err != nil {
+		t.Fatalf("CreatePage failed: %v", err)
+	}
+	submissionID := "66666666-6666-4666-8666-666666666666"
+	created, err := db.CreateUpload(ctx, store.UploadCreate{
+		PageID:       page.ID,
+		S3Key:        "pages/report/file/one.pdf",
+		OriginalName: "one.pdf",
+		SizeBytes:    12,
+		SubmissionID: submissionID,
+	})
+	if err != nil {
+		t.Fatalf("CreateUpload failed: %v", err)
+	}
+
+	// No report yet: receipt has none, upload list carries none.
+	receipt, err := db.GetReceipt(ctx, created.ReceiptToken)
+	if err != nil {
+		t.Fatalf("GetReceipt failed: %v", err)
+	}
+	if receipt.Report != nil {
+		t.Fatalf("receipt report = %#v, want nil", receipt.Report)
+	}
+	uploads, err := db.ListUploads(ctx, page.ID)
+	if err != nil {
+		t.Fatalf("ListUploads failed: %v", err)
+	}
+	if len(uploads) != 1 || uploads[0].Report != nil {
+		t.Fatalf("upload report = %#v, want nil", uploads[0].Report)
+	}
+
+	// Attach a report; the receipt and upload list now carry it.
+	report, oldKey, err := db.PutReport(ctx, page.ID, submissionID, store.ReportCreate{
+		S3Key:        "pages/report/report-1/result.pdf",
+		OriginalName: "result.pdf",
+		SizeBytes:    99,
+		ContentType:  "application/pdf",
+	})
+	if err != nil {
+		t.Fatalf("PutReport failed: %v", err)
+	}
+	if oldKey != "" {
+		t.Fatalf("first PutReport old key = %q, want empty", oldKey)
+	}
+	if report.OriginalName != "result.pdf" || report.SizeBytes != 99 {
+		t.Fatalf("unexpected report: %#v", report)
+	}
+
+	receipt, err = db.GetReceipt(ctx, created.ReceiptToken)
+	if err != nil {
+		t.Fatalf("GetReceipt failed: %v", err)
+	}
+	if receipt.Report == nil || receipt.Report.OriginalName != "result.pdf" || receipt.Report.SizeBytes != 99 {
+		t.Fatalf("receipt report = %#v, want result.pdf/99 bytes", receipt.Report)
+	}
+	if receipt.FileCount != 1 || receipt.TotalBytes != 12 {
+		t.Fatalf("receipt aggregate changed with report: %d files/%d bytes", receipt.FileCount, receipt.TotalBytes)
+	}
+
+	byToken, err := db.GetReportByToken(ctx, created.ReceiptToken)
+	if err != nil {
+		t.Fatalf("GetReportByToken failed: %v", err)
+	}
+	if byToken.S3Key != "pages/report/report-1/result.pdf" || byToken.PageID != page.ID {
+		t.Fatalf("unexpected report by token: %#v", byToken)
+	}
+	byID, err := db.GetReport(ctx, page.ID, submissionID)
+	if err != nil {
+		t.Fatalf("GetReport failed: %v", err)
+	}
+	if byID.ID != byToken.ID {
+		t.Fatalf("GetReport id = %d, GetReportByToken id = %d", byID.ID, byToken.ID)
+	}
+
+	// Replace: the old key comes back.
+	replaced, oldKey, err := db.PutReport(ctx, page.ID, submissionID, store.ReportCreate{
+		S3Key:        "pages/report/report-2/result-v2.pdf",
+		OriginalName: "result-v2.pdf",
+		SizeBytes:    120,
+	})
+	if err != nil {
+		t.Fatalf("PutReport replace failed: %v", err)
+	}
+	if oldKey != "pages/report/report-1/result.pdf" {
+		t.Fatalf("replace old key = %q, want the first key", oldKey)
+	}
+	if replaced.ID != report.ID {
+		t.Fatalf("replace changed report id from %d to %d", report.ID, replaced.ID)
+	}
+
+	// Delete: the key comes back and the receipt loses the report.
+	deletedKey, err := db.DeleteReport(ctx, page.ID, submissionID)
+	if err != nil {
+		t.Fatalf("DeleteReport failed: %v", err)
+	}
+	if deletedKey != "pages/report/report-2/result-v2.pdf" {
+		t.Fatalf("DeleteReport key = %q, want the second key", deletedKey)
+	}
+	if _, err := db.DeleteReport(ctx, page.ID, submissionID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("second DeleteReport err = %v, want ErrNotFound", err)
+	}
+	receipt, err = db.GetReceipt(ctx, created.ReceiptToken)
+	if err != nil {
+		t.Fatalf("GetReceipt failed: %v", err)
+	}
+	if receipt.Report != nil {
+		t.Fatalf("receipt report after delete = %#v, want nil", receipt.Report)
+	}
+	if _, err := db.GetReportByToken(ctx, created.ReceiptToken); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetReportByToken after delete err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSQLiteStoreReportCascadesWithSubmission(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "sprag.db"))
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	page, err := db.CreatePage(ctx, store.PageCreate{
+		Slug:  "report-cascade-1",
+		Title: "Report cascade",
+	})
+	if err != nil {
+		t.Fatalf("CreatePage failed: %v", err)
+	}
+	submissionID := "77777777-7777-4777-8777-777777777777"
+	created, err := db.CreateUpload(ctx, store.UploadCreate{
+		PageID:       page.ID,
+		S3Key:        "pages/cascade/file/one.pdf",
+		OriginalName: "one.pdf",
+		SizeBytes:    12,
+		SubmissionID: submissionID,
+	})
+	if err != nil {
+		t.Fatalf("CreateUpload failed: %v", err)
+	}
+	if _, _, err := db.PutReport(ctx, page.ID, submissionID, store.ReportCreate{
+		S3Key:        "pages/cascade/report/result.pdf",
+		OriginalName: "result.pdf",
+		SizeBytes:    99,
+	}); err != nil {
+		t.Fatalf("PutReport failed: %v", err)
+	}
+
+	keys, reportKey, err := db.DeleteSubmission(ctx, page.ID, submissionID)
+	if err != nil {
+		t.Fatalf("DeleteSubmission failed: %v", err)
+	}
+	if len(keys) != 1 || reportKey != "pages/cascade/report/result.pdf" {
+		t.Fatalf("DeleteSubmission keys = %v report = %q", keys, reportKey)
+	}
+	if _, err := db.GetReportByToken(ctx, created.ReceiptToken); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("report survived submission delete: %v", err)
+	}
+	if _, err := db.GetReceipt(ctx, created.ReceiptToken); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("receipt survived submission delete: %v", err)
+	}
+}
+
+func TestSQLiteStoreReportStatusFlipsWithAttachment(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "sprag.db"))
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	page, err := db.CreatePage(ctx, store.PageCreate{
+		Slug:  "report-status-1",
+		Title: "Report status",
+	})
+	if err != nil {
+		t.Fatalf("CreatePage failed: %v", err)
+	}
+	submissionID := "88888888-8888-4888-8888-888888888888"
+	created, err := db.CreateUpload(ctx, store.UploadCreate{
+		PageID:       page.ID,
+		S3Key:        "pages/status/file/one.pdf",
+		OriginalName: "one.pdf",
+		SizeBytes:    12,
+		SubmissionID: submissionID,
+	})
+	if err != nil {
+		t.Fatalf("CreateUpload failed: %v", err)
+	}
+
+	if _, err := db.UpdateReceiptStatus(ctx, page.ID, submissionID, store.ReceiptStatusCompleted); err != nil {
+		t.Fatalf("UpdateReceiptStatus completed failed: %v", err)
+	}
+	receipt, err := db.GetReceipt(ctx, created.ReceiptToken)
+	if err != nil {
+		t.Fatalf("GetReceipt failed: %v", err)
+	}
+	if receipt.Status != store.ReceiptStatusCompleted {
+		t.Fatalf("receipt status = %q, want completed", receipt.Status)
+	}
+
+	if _, err := db.UpdateReceiptStatus(ctx, page.ID, submissionID, store.ReceiptStatusReceived); err != nil {
+		t.Fatalf("UpdateReceiptStatus received failed: %v", err)
+	}
+	receipt, err = db.GetReceipt(ctx, created.ReceiptToken)
+	if err != nil {
+		t.Fatalf("GetReceipt failed: %v", err)
+	}
+	if receipt.Status != store.ReceiptStatusReceived {
+		t.Fatalf("receipt status = %q, want received", receipt.Status)
 	}
 }
 

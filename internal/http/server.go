@@ -207,6 +207,7 @@ func (s *Server) routes(staticFS http.FileSystem) http.Handler {
 	r.Post("/api/u/{slug}/pin", s.handlePIN)
 	r.Post("/api/u/{slug}", s.handleUpload)
 	r.Get("/api/r/{receiptToken}", s.handlePublicReceipt)
+	r.Get("/api/r/{receiptToken}/report", s.handlePublicReportDownload)
 
 	r.Post("/api/admin/login", s.handleLogin)
 	r.Group(func(r chi.Router) {
@@ -226,6 +227,8 @@ func (s *Server) routes(staticFS http.FileSystem) http.Handler {
 		r.Get("/api/admin/pages/{pageID}/zip", s.handleZip)
 		r.Get("/api/admin/pages/{pageID}/manifest", s.handleManifest)
 		r.With(s.requireCSRF).Patch("/api/admin/pages/{pageID}/submissions/{submissionID}/receipt", s.handleUpdateReceiptStatus)
+		r.With(s.requireCSRF).Post("/api/admin/pages/{pageID}/submissions/{submissionID}/report", s.handleUploadReport)
+		r.With(s.requireCSRF).Delete("/api/admin/pages/{pageID}/submissions/{submissionID}/report", s.handleDeleteReport)
 	})
 
 	if staticFS != nil {
@@ -436,6 +439,17 @@ func (s *Server) handleDeletePage(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		reportKeys, err := s.store.ListReportKeys(r.Context(), pageID)
+		if err != nil {
+			s.serverError(w, err)
+			return
+		}
+		for _, key := range reportKeys {
+			if err := s.blobs.Delete(r.Context(), key); err != nil {
+				s.serverError(w, err)
+				return
+			}
+		}
 	}
 	if err := s.store.DeletePage(r.Context(), pageID); errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "page not found")
@@ -590,7 +604,7 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 		s.serverError(w, err)
 		return
 	}
-	keys, err := s.store.DeleteSubmission(r.Context(), pageID, submissionID)
+	keys, reportKey, err := s.store.DeleteSubmission(r.Context(), pageID, submissionID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "submission not found")
 		return
@@ -605,6 +619,12 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	if reportKey != "" {
+		if err := s.blobs.Delete(r.Context(), reportKey); err != nil {
+			s.serverError(w, err)
+			return
+		}
+	}
 	if _, err := s.store.RecordCustodyEvent(r.Context(), store.CustodyEventCreate{
 		PageID:    pageID,
 		EventType: "submission.deleted",
@@ -612,6 +632,7 @@ func (s *Server) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) 
 		Detail: adminActionDetail(page, map[string]any{
 			"submission_id": submissionID,
 			"files":         len(keys),
+			"report":        reportKey != "",
 		}),
 	}); err != nil {
 		s.serverError(w, err)
@@ -755,6 +776,7 @@ func (s *Server) handlePublicReceipt(w http.ResponseWriter, r *http.Request) {
 		"updated_at":   receipt.UpdatedAt,
 		"file_count":   receipt.FileCount,
 		"total_size":   receipt.TotalBytes,
+		"report":       reportResponse(receipt.Report),
 	})
 }
 
@@ -812,6 +834,230 @@ func (s *Server) handleUpdateReceiptStatus(w http.ResponseWriter, r *http.Reques
 		"receipt_status":            envelope.ReceiptStatus,
 		"receipt_status_updated_at": envelope.ReceiptStatusUpdated,
 	})
+}
+
+// handleUploadReport attaches (or replaces) the report for one submission. The
+// report is stored like an intake blob under the page's namespace; only the
+// receipt token grants download. Attaching flips the receipt status to
+// completed so the partner sees "Report ready" on their receipt link.
+func (s *Server) handleUploadReport(w http.ResponseWriter, r *http.Request) {
+	pageID, ok := parseIDParam(w, r, "pageID")
+	if !ok {
+		return
+	}
+	submissionID := strings.TrimSpace(chi.URLParam(r, "submissionID"))
+	if submissionID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_submission_id", "submission id is required")
+		return
+	}
+	page, err := s.store.GetPage(r.Context(), pageID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "page not found")
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	// Reports are admin-uploaded and small; cap the whole request like the
+	// upload path. ParseMultipartForm buffers the body, so the cap is what
+	// stops an oversized report from being read in full.
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxFileSize+uploadOverheadAllowance)
+	if err := r.ParseMultipartForm(uploadOverheadAllowance); err != nil {
+		if isMaxBytesError(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds the allowed size")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_multipart", "expected multipart form data")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing_file", "multipart field 'file' is required")
+		return
+	}
+	defer file.Close()
+	original := header.Filename
+	if original == "" {
+		writeError(w, http.StatusBadRequest, "missing_filename", "report must have a filename")
+		return
+	}
+	storedName := filepath.Base(original)
+	reportID, err := ids.NewUUID()
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	key := s.objectKey(page.Slug, reportID, storedName)
+	counting := &countingLimitReader{r: file, remaining: s.cfg.MaxFileSize}
+	if err := s.blobs.Upload(r.Context(), key, counting, header.Header.Get("Content-Type")); errors.Is(err, errTooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", "report exceeds the allowed size")
+		return
+	} else if isMaxBytesError(err) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds the allowed size")
+		return
+	} else if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	report, oldKey, err := s.store.PutReport(r.Context(), pageID, submissionID, store.ReportCreate{
+		S3Key:        key,
+		OriginalName: storedName,
+		SizeBytes:    counting.count,
+		ContentType:  header.Header.Get("Content-Type"),
+	})
+	if err != nil {
+		// The blob was already written; remove it so a retry does not strand
+		// an unreferenced object. Cleanup must run even if the client has
+		// disconnected.
+		cleanupCtx := context.WithoutCancel(r.Context())
+		if delErr := s.blobs.Delete(cleanupCtx, key); delErr != nil {
+			s.logger.Error("delete orphaned report blob after failed record", "key", key, "error", delErr)
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "submission not found")
+			return
+		}
+		s.serverError(w, err)
+		return
+	}
+	if oldKey != "" && oldKey != key {
+		if err := s.blobs.Delete(r.Context(), oldKey); err != nil {
+			s.serverError(w, err)
+			return
+		}
+	}
+	envelope, err := s.store.UpdateReceiptStatus(r.Context(), pageID, submissionID, store.ReceiptStatusCompleted)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	if _, err := s.store.RecordCustodyEvent(r.Context(), store.CustodyEventCreate{
+		PageID:               pageID,
+		SubmissionEnvelopeID: &envelope.ID,
+		EventType:            "report.uploaded",
+		Actor:                "admin",
+		Detail: adminActionDetail(page, map[string]any{
+			"submission_id": submissionID,
+			"name":          report.OriginalName,
+			"bytes":         report.SizeBytes,
+			"object_key":    report.S3Key,
+		}),
+	}); err != nil {
+		s.serverError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, reportResponse(&report))
+}
+
+// handleDeleteReport removes the report for one submission and reverts the
+// receipt status to received.
+func (s *Server) handleDeleteReport(w http.ResponseWriter, r *http.Request) {
+	pageID, ok := parseIDParam(w, r, "pageID")
+	if !ok {
+		return
+	}
+	submissionID := strings.TrimSpace(chi.URLParam(r, "submissionID"))
+	if submissionID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_submission_id", "submission id is required")
+		return
+	}
+	page, err := s.store.GetPage(r.Context(), pageID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "page not found")
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	key, err := s.store.DeleteReport(r.Context(), pageID, submissionID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "report not found")
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	if err := s.blobs.Delete(r.Context(), key); err != nil {
+		s.serverError(w, err)
+		return
+	}
+	envelope, err := s.store.UpdateReceiptStatus(r.Context(), pageID, submissionID, store.ReceiptStatusReceived)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	if _, err := s.store.RecordCustodyEvent(r.Context(), store.CustodyEventCreate{
+		PageID:               pageID,
+		SubmissionEnvelopeID: &envelope.ID,
+		EventType:            "report.deleted",
+		Actor:                "admin",
+		Detail:               adminActionDetail(page, map[string]any{"submission_id": submissionID}),
+	}); err != nil {
+		s.serverError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handlePublicReportDownload streams the report to the partner. The receipt
+// token is the capability: no auth, no PIN, works after the page is sealed.
+func (s *Server) handlePublicReportDownload(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(chi.URLParam(r, "receiptToken"))
+	report, err := s.store.GetReportByToken(r.Context(), token)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "report not found")
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	body, err := s.blobs.Download(r.Context(), report.S3Key)
+	if errors.Is(err, blob.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "report object not found")
+		return
+	}
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	defer body.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(report.SizeBytes, 10))
+	w.Header().Set("Content-Disposition", contentDisposition(report.OriginalName))
+	if _, err := io.Copy(w, body); err != nil {
+		if r.Context().Err() != nil {
+			// Client disconnected mid-download.
+			return
+		}
+		s.logger.Error("report download stream failed", "report_id", report.ID, "error", err)
+		panic(http.ErrAbortHandler)
+	}
+	if _, err := s.store.RecordCustodyEvent(r.Context(), store.CustodyEventCreate{
+		PageID:               report.PageID,
+		SubmissionEnvelopeID: &report.SubmissionEnvelopeID,
+		EventType:            "report.downloaded",
+		Actor:                "uploader",
+		Detail:               jsonDetail(map[string]any{"bytes": report.SizeBytes}),
+	}); err != nil {
+		s.logger.Error("record custody event failed", "report_id", report.ID, "event_type", "report.downloaded", "error", err)
+	}
+}
+
+// reportResponse is the JSON shape of a report in the receipt and admin
+// responses. A nil report serializes as null.
+func reportResponse(report *store.Report) any {
+	if report == nil {
+		return nil
+	}
+	return map[string]any{
+		"name":        report.OriginalName,
+		"size":        report.SizeBytes,
+		"uploaded_at": report.UploadedAt,
+	}
 }
 
 func (s *Server) writeZipEntry(ctx context.Context, zw *zip.Writer, names map[string]bool, upload store.Upload) error {

@@ -292,6 +292,161 @@ func TestAdminCanUpdateReceiptStatusOnly(t *testing.T) {
 	}
 }
 
+func TestAdminAttachesReportAndPartnerDownloadsIt(t *testing.T) {
+	handler, blobs := newTestHandler(t)
+	session := loginAdmin(t, handler)
+	slug := createPageSlug(t, handler, session, map[string]any{"title": "Report delivery"})
+
+	submissionID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	upload := performMultipartFields(t, handler, "/api/u/"+slug, map[string]string{
+		"submission_id": submissionID,
+	}, "file", "evidence.pdf", []byte("evidence body"), nil)
+	if upload.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d body=%s", upload.Code, upload.Body.String())
+	}
+	var created struct {
+		ReceiptURL string `json:"receipt_url"`
+	}
+	decodeJSON(t, upload.Body.Bytes(), &created)
+	token := created.ReceiptURL[strings.LastIndex(created.ReceiptURL, "/")+1:]
+
+	// Receipt starts without a report.
+	receipt := perform(t, handler, http.MethodGet, "/api/r/"+token, nil, nil, nil)
+	if receipt.Code != http.StatusOK {
+		t.Fatalf("receipt status = %d body=%s", receipt.Code, receipt.Body.String())
+	}
+	if !strings.Contains(receipt.Body.String(), `"report":null`) {
+		t.Fatalf("receipt should start with no report: %s", receipt.Body.String())
+	}
+
+	// Report upload without an admin session is rejected.
+	noAuth := performMultipartWithHeaders(t, handler, "/api/admin/pages/1/submissions/"+submissionID+"/report", nil, "file", "result.pdf", []byte("report body"), nil, csrfHeader())
+	if noAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("report upload without session = %d body=%s, want 401", noAuth.Code, noAuth.Body.String())
+	}
+
+	// Admin attaches the report.
+	attach := performMultipartWithHeaders(t, handler, "/api/admin/pages/1/submissions/"+submissionID+"/report", nil, "file", "result.pdf", []byte("report body"), session, csrfHeader())
+	if attach.Code != http.StatusCreated {
+		t.Fatalf("report upload status = %d body=%s", attach.Code, attach.Body.String())
+	}
+	var attached struct {
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
+	decodeJSON(t, attach.Body.Bytes(), &attached)
+	if attached.Name != "result.pdf" || attached.Size != int64(len("report body")) {
+		t.Fatalf("unexpected report response: %#v", attached)
+	}
+
+	// The admin file list carries the report so the dashboard can show it.
+	files := perform(t, handler, http.MethodGet, "/api/admin/pages/1/files", nil, session, nil)
+	if files.Code != http.StatusOK {
+		t.Fatalf("file list status = %d body=%s", files.Code, files.Body.String())
+	}
+	var listed []struct {
+		Report *struct {
+			Name string `json:"name"`
+			Size int64  `json:"size"`
+		} `json:"report"`
+	}
+	decodeJSON(t, files.Body.Bytes(), &listed)
+	if len(listed) != 1 || listed[0].Report == nil || listed[0].Report.Name != "result.pdf" || listed[0].Report.Size != int64(len("report body")) {
+		t.Fatalf("file list missing report info: %s", files.Body.String())
+	}
+
+	// Receipt now shows the report and the completed status.
+	receipt = perform(t, handler, http.MethodGet, "/api/r/"+token, nil, nil, nil)
+	if receipt.Code != http.StatusOK {
+		t.Fatalf("receipt status = %d body=%s", receipt.Code, receipt.Body.String())
+	}
+	if !strings.Contains(receipt.Body.String(), `"status":"completed"`) || !strings.Contains(receipt.Body.String(), `"name":"result.pdf"`) {
+		t.Fatalf("receipt did not show completed report: %s", receipt.Body.String())
+	}
+
+	// Partner downloads the report via the receipt token.
+	download := perform(t, handler, http.MethodGet, "/api/r/"+token+"/report", nil, nil, nil)
+	if download.Code != http.StatusOK {
+		t.Fatalf("report download status = %d body=%s", download.Code, download.Body.String())
+	}
+	if download.Body.String() != "report body" {
+		t.Fatalf("report download body = %q, want %q", download.Body.String(), "report body")
+	}
+	if got := download.Header().Get("Content-Disposition"); !strings.Contains(got, `attachment`) || !strings.Contains(got, `result.pdf`) {
+		t.Fatalf("unexpected report content disposition %q", got)
+	}
+
+	// Unknown token gets a 404.
+	missing := perform(t, handler, http.MethodGet, "/api/r/not-a-real-token/report", nil, nil, nil)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing report download = %d body=%s, want 404", missing.Code, missing.Body.String())
+	}
+
+	// Replace: the old blob is removed, the new one is served.
+	replace := performMultipartWithHeaders(t, handler, "/api/admin/pages/1/submissions/"+submissionID+"/report", nil, "file", "result-v2.pdf", []byte("v2 body"), session, csrfHeader())
+	if replace.Code != http.StatusCreated {
+		t.Fatalf("report replace status = %d body=%s", replace.Code, replace.Body.String())
+	}
+	if len(blobs.objects) != 2 {
+		t.Fatalf("expected 2 blobs after replace (upload + report), got %d", len(blobs.objects))
+	}
+	download = perform(t, handler, http.MethodGet, "/api/r/"+token+"/report", nil, nil, nil)
+	if download.Body.String() != "v2 body" {
+		t.Fatalf("report download after replace = %q, want %q", download.Body.String(), "v2 body")
+	}
+
+	// Delete: 204, status reverts, blob gone.
+	del := perform(t, handler, http.MethodDelete, "/api/admin/pages/1/submissions/"+submissionID+"/report", nil, session, csrfHeader())
+	if del.Code != http.StatusNoContent {
+		t.Fatalf("report delete status = %d body=%s", del.Code, del.Body.String())
+	}
+	if len(blobs.objects) != 1 {
+		t.Fatalf("expected 1 blob after report delete, got %d", len(blobs.objects))
+	}
+	receipt = perform(t, handler, http.MethodGet, "/api/r/"+token, nil, nil, nil)
+	if !strings.Contains(receipt.Body.String(), `"status":"received"`) || !strings.Contains(receipt.Body.String(), `"report":null`) {
+		t.Fatalf("receipt after report delete = %s", receipt.Body.String())
+	}
+	download = perform(t, handler, http.MethodGet, "/api/r/"+token+"/report", nil, nil, nil)
+	if download.Code != http.StatusNotFound {
+		t.Fatalf("report download after delete = %d, want 404", download.Code)
+	}
+}
+
+func TestReportWorksAfterPageSeal(t *testing.T) {
+	handler, _ := newTestHandler(t)
+	session := loginAdmin(t, handler)
+	slug := createPageSlug(t, handler, session, map[string]any{"title": "Sealed report"})
+
+	submissionID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	upload := performMultipartFields(t, handler, "/api/u/"+slug, map[string]string{
+		"submission_id": submissionID,
+	}, "file", "evidence.pdf", []byte("evidence"), nil)
+	if upload.Code != http.StatusCreated {
+		t.Fatalf("upload status = %d body=%s", upload.Code, upload.Body.String())
+	}
+	var created struct {
+		ReceiptURL string `json:"receipt_url"`
+	}
+	decodeJSON(t, upload.Body.Bytes(), &created)
+	token := created.ReceiptURL[strings.LastIndex(created.ReceiptURL, "/")+1:]
+
+	seal := performJSON(t, handler, http.MethodPost, "/api/admin/pages/1/seal", map[string]string{}, session, csrfHeader())
+	if seal.Code != http.StatusOK {
+		t.Fatalf("seal status = %d body=%s", seal.Code, seal.Body.String())
+	}
+
+	// Report upload and public download keep working after the page is sealed.
+	attach := performMultipartWithHeaders(t, handler, "/api/admin/pages/1/submissions/"+submissionID+"/report", nil, "file", "result.pdf", []byte("report body"), session, csrfHeader())
+	if attach.Code != http.StatusCreated {
+		t.Fatalf("report upload on sealed page = %d body=%s", attach.Code, attach.Body.String())
+	}
+	download := perform(t, handler, http.MethodGet, "/api/r/"+token+"/report", nil, nil, nil)
+	if download.Code != http.StatusOK || download.Body.String() != "report body" {
+		t.Fatalf("report download after seal = %d body=%s", download.Code, download.Body.String())
+	}
+}
+
 func TestAdminCanDeleteWholeSubmission(t *testing.T) {
 	handler, blobs := newTestHandler(t)
 	session := loginAdmin(t, handler)
@@ -1274,6 +1429,7 @@ func newHandlerWithErr(t *testing.T, blobs blob.Store, tweak func(*httpapi.Confi
 		AllowedExtensions: nil,
 		StoragePrefix:     "pages/",
 		SecureCookies:     true,
+		UploadRateLimit:   30,
 	}
 	if tweak != nil {
 		tweak(&cfg)
@@ -1328,6 +1484,10 @@ func performMultipart(t *testing.T, h http.Handler, path, field, filename string
 }
 
 func performMultipartFields(t *testing.T, h http.Handler, path string, fields map[string]string, field, filename string, content []byte, cookies []*http.Cookie) *httptest.ResponseRecorder {
+	return performMultipartWithHeaders(t, h, path, fields, field, filename, content, cookies, nil)
+}
+
+func performMultipartWithHeaders(t *testing.T, h http.Handler, path string, fields map[string]string, field, filename string, content []byte, cookies []*http.Cookie, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -1346,7 +1506,7 @@ func performMultipartFields(t *testing.T, h http.Handler, path string, fields ma
 	if err := mw.Close(); err != nil {
 		t.Fatalf("close multipart: %v", err)
 	}
-	return perform(t, h, http.MethodPost, path, &buf, cookies, map[string]string{"Content-Type": mw.FormDataContentType()})
+	return perform(t, h, http.MethodPost, path, &buf, cookies, mergeHeaders(headers, map[string]string{"Content-Type": mw.FormDataContentType()}))
 }
 
 func perform(t *testing.T, h http.Handler, method, path string, body io.Reader, cookies []*http.Cookie, headers map[string]string) *httptest.ResponseRecorder {
