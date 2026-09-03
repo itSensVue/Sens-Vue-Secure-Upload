@@ -661,9 +661,10 @@ select:focus {
 }
 
 .report-control {
-  display: inline-flex;
+  display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -1162,7 +1163,8 @@ select:focus {
   .receipt-strip {
     grid-template-columns: 1fr;
   }
-  .submission-meta-actions {
+  .submission-meta-actions,
+  .report-control {
     justify-content: flex-start;
   }
   .receipt-status-field {

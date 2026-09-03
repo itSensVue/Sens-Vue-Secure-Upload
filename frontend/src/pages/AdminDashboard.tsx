@@ -840,40 +840,11 @@ export default function AdminDashboard() {
                             Receipt
                           </a>
                         )}
-                        {group.receiptToken && (
-                          <span className="report-control">
-                            {group.report ? (
-                              <>
-                                <span className="report-info">
-                                  <FileText size={14} />
-                                  <span>
-                                    <strong>{group.report.name}</strong>
-                                    <small>
-                                      {formatBytes(group.report.size)}
-                                      {selected.e2e_enabled ? " · not E2E-encrypted" : ""}
-                                    </small>
-                                  </span>
-                                </span>
-                                <a className="secondary-action" href={`/r/${group.receiptToken}/report`}>
-                                  <Download size={17} />
-                                  Download
-                                </a>
-                                <button className="secondary-action" onClick={() => promptReportUpload(group)}>
-                                  <UploadCloud size={17} />
-                                  Replace
-                                </button>
-                                <button className="secondary-action danger" onClick={() => deleteReport(group)}>
-                                  <Trash2 size={17} />
-                                  Delete
-                                </button>
-                              </>
-                            ) : (
-                              <button className="secondary-action" onClick={() => promptReportUpload(group)}>
-                                <UploadCloud size={17} />
-                                Upload report
-                              </button>
-                            )}
-                          </span>
+                        {group.receiptToken && !group.report && (
+                          <button className="secondary-action" onClick={() => promptReportUpload(group)}>
+                            <UploadCloud size={17} />
+                            Upload report
+                          </button>
                         )}
                         <button
                           className="icon-button danger"
@@ -884,6 +855,32 @@ export default function AdminDashboard() {
                         </button>
                       </div>
                     </div>
+                    {group.receiptToken && group.report && (
+                      <div className="report-control">
+                        <span className="report-info">
+                          <FileText size={14} />
+                          <span>
+                            <strong>{group.report.name}</strong>
+                            <small>
+                              {formatBytes(group.report.size)}
+                              {selected.e2e_enabled ? " · not E2E-encrypted" : ""}
+                            </small>
+                          </span>
+                        </span>
+                        <a className="secondary-action" href={`/r/${group.receiptToken}/report`}>
+                          <Download size={17} />
+                          Download
+                        </a>
+                        <button className="secondary-action" onClick={() => promptReportUpload(group)}>
+                          <UploadCloud size={17} />
+                          Replace
+                        </button>
+                        <button className="secondary-action danger" onClick={() => deleteReport(group)}>
+                          <Trash2 size={17} />
+                          Delete
+                        </button>
+                      </div>
+                    )}
                     <div className="submission-files">
                       {group.files.map((file) => (
                         <div className="file-row" key={file.id}>
