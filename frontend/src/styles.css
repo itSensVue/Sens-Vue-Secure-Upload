@@ -666,10 +666,6 @@ select:focus {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-inset);
 }
 
 .report-info {
