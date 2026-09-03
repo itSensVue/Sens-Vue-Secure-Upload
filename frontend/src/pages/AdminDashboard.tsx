@@ -841,8 +841,7 @@ export default function AdminDashboard() {
                           </a>
                         )}
                         {group.receiptToken && !group.report && (
-                          <button className="secondary-action linklike" onClick={() => promptReportUpload(group)}>
-                            <UploadCloud size={17} />
+                          <button className="secondary-action" onClick={() => promptReportUpload(group)}>
                             Upload response
                           </button>
                         )}

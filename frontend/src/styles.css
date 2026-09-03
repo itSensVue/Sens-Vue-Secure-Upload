@@ -298,12 +298,6 @@ select:focus {
   border-color: var(--border-strong);
 }
 
-/* Borderless text-action button, e.g. "Upload response" in the submission header row. */
-.secondary-action.linklike {
-  border: none;
-  background: transparent;
-}
-
 .icon-button {
   width: 40px;
   color: var(--text-strong);
