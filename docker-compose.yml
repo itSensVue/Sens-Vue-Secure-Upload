@@ -28,6 +28,7 @@ services:
       - sprag-data:/data
     networks:
       - sprag-net
+      - coolify
     expose:
       - "8080"
     restart: unless-stopped
@@ -76,6 +77,8 @@ services:
 networks:
   sprag-net:
     driver: bridge
+  coolify:
+    external: true
 
 volumes:
   sprag-data:
